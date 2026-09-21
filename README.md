@@ -13,17 +13,49 @@
 - 人员维护：账号、类型、状态、容量、日常占比和权限角色
 - 权限角色维护：管理员、规划负责人、普通成员和自定义角色
 - 权限实际约束规划编辑、本人事项、人员、类型和角色维护操作
-- 本地身份切换，用于验证不同角色的操作边界
-- 浏览器本地持久化，刷新后保留修改
+- 服务端登录会话，团队数据按团队隔离
+- PostgreSQL 持久化、版本号乐观锁和规划变更审计
+- 团队级数据隔离、服务端登录会话和用户行为日志
+- 可通过环境变量配置账号密码、OAuth2 或双模式登录
+- OAuth2 profile 接口默认读取 `email`，并取 `@` 前部分作为账号名
+- OAuth2 新用户可自动创建，但默认绑定“未授权用户”角色，不自动获得团队权限
 
-## 本地运行
+## 本地开发
 
 ```bash
 pnpm install
 pnpm dev
+
+# 另开终端启动 API（需要本机 PostgreSQL）
+DATABASE_URL=postgres://planner:planner@localhost:5432/rolling_plan \
+BOOTSTRAP_ADMIN_PASSWORD='replace-me' pnpm server
 ```
 
 默认访问 `http://localhost:8000`。
+
+默认管理员账号为 `admin`，密码由 `BOOTSTRAP_ADMIN_PASSWORD` 配置。开发环境可使用默认值 `ChangeMe123!`，生产环境必须覆盖。
+
+## Docker 部署
+
+```bash
+cp .env.example .env
+# 修改数据库密码、管理员密码和 OAuth2 配置
+docker compose up -d --build
+```
+
+访问 `http://localhost`。Compose 会启动 PostgreSQL、API 和 Nginx 前端；数据库数据保存在 `postgres_data` 卷中。
+
+## 登录方式配置
+
+通过 `AUTH_MODE` 控制：
+
+- `local`：仅账号密码登录
+- `oauth2`：仅 OAuth2 单点登录
+- `both`：两种登录方式都支持
+
+OAuth2 需要配置 `OAUTH2_AUTHORIZATION_URL`、`OAUTH2_TOKEN_URL`、`OAUTH2_PROFILE_URL`、`OAUTH2_CLIENT_ID`、`OAUTH2_CLIENT_SECRET` 和回调地址。服务端调用 profile 接口后读取 `OAUTH2_EMAIL_FIELD`（默认 `email`），例如 `xx@aa.com` 会使用 `xx` 作为团队账号。设置 `OAUTH2_AUTO_PROVISION=true` 后，不存在的用户会自动创建并绑定 `role-no-access`，由管理员后续授权。
+
+系统以团队为数据隔离边界：用户、规划、角色和行为日志均关联 `team_id`。具备权限管理权限的管理员可以在“团队与权限 → 行为日志”查看用户的登录、退出、规划读写和 API 操作记录。
 
 ## 验证
 
@@ -32,4 +64,4 @@ pnpm test
 pnpm build
 ```
 
-当前版本是本地多身份演示 MVP，身份切换仅用于验证权限。接入服务端时应由登录态提供当前用户，并在服务端再次校验权限；前端按钮控制不能替代服务端鉴权。
+服务端会根据登录用户、所属团队和规划中的角色再次校验权限；前端按钮控制不能替代服务端鉴权。规划写入使用版本号乐观锁，避免多人同时编辑时静默覆盖。

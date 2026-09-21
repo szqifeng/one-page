@@ -22,7 +22,7 @@ import {
 } from 'antd';
 import dayjs from 'dayjs';
 import type { Dispatch, SetStateAction } from 'react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type {
   PermissionKey,
   PermissionRole,
@@ -32,6 +32,7 @@ import type {
   Iteration,
 } from '@/types/planning';
 import { hasPermission, permissionCatalog } from '@/utils/permissions';
+import { getBehaviorLogs, type BehaviorLog } from '@/utils/api';
 import styles from './index.less';
 
 const { Text, Title } = Typography;
@@ -41,6 +42,7 @@ interface TeamSettingsProps {
   onClose: () => void;
   plan: PlanState;
   setPlan: Dispatch<SetStateAction<PlanState>>;
+  teamName?: string;
 }
 
 interface PersonFormValues {
@@ -76,7 +78,7 @@ interface IterationFormValues {
 
 const makeId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-export default function TeamSettings({ open, onClose, plan, setPlan }: TeamSettingsProps) {
+export default function TeamSettings({ open, onClose, plan, setPlan, teamName }: TeamSettingsProps) {
   const [editingPerson, setEditingPerson] = useState<Person | null>(null);
   const [personModalOpen, setPersonModalOpen] = useState(false);
   const [editingType, setEditingType] = useState<PersonnelType | null>(null);
@@ -89,11 +91,22 @@ export default function TeamSettings({ open, onClose, plan, setPlan }: TeamSetti
   const [typeForm] = Form.useForm<TypeFormValues>();
   const [roleForm] = Form.useForm<RoleFormValues>();
   const [iterationForm] = Form.useForm<IterationFormValues>();
+  const [behaviorLogs, setBehaviorLogs] = useState<BehaviorLog[]>([]);
+  const [behaviorLogsLoading, setBehaviorLogsLoading] = useState(false);
 
   const canManagePeople = hasPermission(plan, 'team.manage');
   const canManageTypes = hasPermission(plan, 'type.manage');
   const canManageIterations = hasPermission(plan, 'iteration.manage');
   const canManagePermissions = hasPermission(plan, 'permission.manage');
+
+  useEffect(() => {
+    if (!open || !canManagePermissions) return;
+    setBehaviorLogsLoading(true);
+    getBehaviorLogs()
+      .then(({ logs }) => setBehaviorLogs(logs))
+      .catch(() => message.error('行为日志加载失败'))
+      .finally(() => setBehaviorLogsLoading(false));
+  }, [canManagePermissions, open]);
 
   const openPersonEditor = (person?: Person) => {
     const target = person ?? null;
@@ -489,10 +502,19 @@ export default function TeamSettings({ open, onClose, plan, setPlan }: TeamSetti
     },
   ];
 
+  const behaviorLogColumns: ProColumns<BehaviorLog>[] = [
+    { title: '时间', dataIndex: 'createdAt', width: 170, render: (_, log) => dayjs(log.createdAt).format('YYYY-MM-DD HH:mm:ss') },
+    { title: '用户', dataIndex: 'displayName', width: 120, render: (_, log) => log.displayName || log.account || '未知用户' },
+    { title: '行为', dataIndex: 'action', width: 150 },
+    { title: '请求', dataIndex: 'path', render: (_, log) => `${log.method} ${log.path}` },
+    { title: '结果', dataIndex: 'statusCode', width: 80, render: (_, log) => <Tag color={log.statusCode < 400 ? 'success' : 'error'}>{log.statusCode}</Tag> },
+    { title: 'IP', dataIndex: 'ip', width: 140, ellipsis: true },
+  ];
+
   return (
     <>
       <Drawer
-        title="团队与权限"
+        title={`团队与权限${teamName ? ` · ${teamName}` : ''}`}
         width={980}
         open={open}
         onClose={onClose}
@@ -599,6 +621,31 @@ export default function TeamSettings({ open, onClose, plan, setPlan }: TeamSetti
                         ]
                       : []
                   }
+                />
+              ),
+            },
+            {
+              key: 'logs',
+              label: '行为日志',
+              disabled: !canManagePermissions,
+              children: (
+                <ProTable<BehaviorLog>
+                  rowKey="id"
+                  search={false}
+                  pagination={{ pageSize: 20 }}
+                  options={false}
+                  loading={behaviorLogsLoading}
+                  dataSource={behaviorLogs}
+                  columns={behaviorLogColumns}
+                  scroll={{ x: 850 }}
+                  toolBarRender={() => [
+                    <Button key="refresh-logs" onClick={() => {
+                      setBehaviorLogsLoading(true);
+                      getBehaviorLogs().then(({ logs }) => setBehaviorLogs(logs)).catch(() => message.error('行为日志加载失败')).finally(() => setBehaviorLogsLoading(false));
+                    }}>
+                      刷新
+                    </Button>,
+                  ]}
                 />
               ),
             },

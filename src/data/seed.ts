@@ -103,6 +103,13 @@ export const seedPlan: PlanState = {
       permissions: ['plan.view', 'plan.edit_own', 'team.view'],
       builtIn: true,
     },
+    {
+      id: 'role-no-access',
+      name: '未授权用户',
+      description: '账号已创建，但尚未授予任何团队权限',
+      permissions: [],
+      builtIn: true,
+    },
   ],
   iterations,
   people: [

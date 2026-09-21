@@ -15,6 +15,39 @@ body {
   background: @surface;
 }
 
+.loginPage {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background: linear-gradient(135deg, #edf8f4, #f7fafb 58%, #eaf1f5);
+}
+
+.loginCard {
+  width: min(420px, 100%);
+  box-shadow: 0 18px 50px rgb(24 55 79 / 12%);
+
+  h2 {
+    margin: 0 0 4px !important;
+  }
+}
+
+.loginError {
+  margin: 16px 0;
+  padding: 9px 12px;
+  color: #a13d32;
+  border: 1px solid #f1c7c0;
+  border-radius: 7px;
+  background: #fff5f2;
+}
+
+.loginHint {
+  display: block;
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .page {
   min-height: 100vh;
 }

@@ -9,6 +9,12 @@ export default defineConfig({
   title: '季度滚动规划',
   favicons: [],
   routes: [{ path: '/', component: 'index' }],
+  proxy: {
+    '/api': {
+      target: 'http://localhost:3001',
+      changeOrigin: true,
+    },
+  },
   metas: [
     { name: 'viewport', content: 'width=device-width, initial-scale=1' },
     {

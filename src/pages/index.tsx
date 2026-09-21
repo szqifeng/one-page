@@ -3,6 +3,7 @@ import {
   DeleteOutlined,
   DownOutlined,
   EditOutlined,
+  LogoutOutlined,
   PlusOutlined,
   ReloadOutlined,
   RightOutlined,
@@ -13,6 +14,7 @@ import {
 import { ProCard } from '@ant-design/pro-components';
 import {
   Button,
+  Card,
   Col,
   Empty,
   Flex,
@@ -35,6 +37,7 @@ import dayjs from 'dayjs';
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import TeamSettings from '@/components/TeamSettings';
 import { seedPlan } from '@/data/seed';
+import { ApiError, getAuthConfig, getCurrentUser, getPlan, login, logout, savePlan as savePlanApi, type AuthUser } from '@/utils/api';
 import type {
   Allocation,
   DemandType,
@@ -57,7 +60,6 @@ import {
   canEditItem,
   hasPermission,
 } from '@/utils/permissions';
-import { clearPlan, loadPlan, savePlan } from '@/utils/storage';
 import styles from './index.less';
 
 const { Text, Title } = Typography;
@@ -83,6 +85,36 @@ interface InsightItem {
   danger?: boolean;
   selected?: boolean;
   onClick?: () => void;
+}
+
+function LoginScreen({ onLogin, error, oauthEnabled, passwordEnabled }: { onLogin: (account: string, password: string) => Promise<void>; error?: string; oauthEnabled: boolean; passwordEnabled: boolean }) {
+  const [form] = Form.useForm<{ account: string; password: string }>();
+  return (
+    <main className={styles.loginPage}>
+      <Card className={styles.loginCard} bordered={false}>
+        <Title level={2}>季度双周滚动规划</Title>
+        <Text type="secondary">请登录团队账号后继续</Text>
+        {error && <div className={styles.loginError}>{error}</div>}
+        {passwordEnabled && (
+          <Form form={form} layout="vertical" onFinish={(values) => onLogin(values.account, values.password)}>
+            <Form.Item label="账号" name="account" rules={[{ required: true, message: '请输入账号' }]}>
+              <Input autoComplete="username" placeholder="请输入团队账号" />
+            </Form.Item>
+            <Form.Item label="密码" name="password" rules={[{ required: true, message: '请输入密码' }]}>
+              <Input.Password autoComplete="current-password" placeholder="请输入密码" />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" block>登录</Button>
+          </Form>
+        )}
+        {oauthEnabled && (
+          <Button block className={styles.ssoButton} onClick={() => { window.location.href = '/api/auth/oauth2/start'; }}>
+            企业单点登录
+          </Button>
+        )}
+        <Text type="secondary" className={styles.loginHint}>管理员初始密码由部署环境变量 BOOTSTRAP_ADMIN_PASSWORD 配置。</Text>
+      </Card>
+    </main>
+  );
 }
 
 interface RoutineCapacityRow {
@@ -121,8 +153,19 @@ const statusMeta: Record<WorkStatus, { label: string; color: string }> = {
 
 const makeId = () => `work-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
+function personIdForUser(plan: PlanState, user: AuthUser) {
+  return plan.people.find((person) => person.id === user.personId || person.account.toLowerCase() === user.account.toLowerCase())?.id ?? user.personId;
+}
+
 export default function RollingPlanPage() {
-  const [plan, setPlan] = useState<PlanState>(() => loadPlan());
+  const [plan, setPlan] = useState<PlanState>(() => structuredClone(seedPlan));
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState('');
+  const [oauthEnabled, setOauthEnabled] = useState(false);
+  const [passwordEnabled, setPasswordEnabled] = useState(true);
+  const [planVersion, setPlanVersion] = useState(0);
+  const [planHydrated, setPlanHydrated] = useState(false);
   const [ownerFilter, setOwnerFilter] = useState('all');
   const [personTypeFilter, setPersonTypeFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState<'all' | DemandType>('all');
@@ -139,7 +182,86 @@ export default function RollingPlanPage() {
   const [workForm] = Form.useForm<WorkItemFormValues>();
   const [capacityForm] = Form.useForm<{ iterationCapacityDays: number }>();
 
-  useEffect(() => savePlan(plan), [plan]);
+  useEffect(() => {
+    let active = true;
+    getAuthConfig().then(({ oauthEnabled: ssoEnabled, passwordEnabled: localEnabled }) => {
+      if (active) {
+        setOauthEnabled(ssoEnabled);
+        setPasswordEnabled(localEnabled);
+      }
+    }).catch(() => undefined);
+    getCurrentUser()
+      .then(async ({ user }) => {
+        if (!active) return;
+        setAuthUser(user);
+        try {
+          const remote = await getPlan();
+          if (!active) return;
+          setPlan({ ...remote.plan, currentUserId: personIdForUser(remote.plan, user) });
+          setPlanVersion(remote.version);
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 404) {
+            setPlan({ ...structuredClone(seedPlan), currentUserId: personIdForUser(seedPlan, user) });
+            setPlanVersion(0);
+          } else {
+            throw error;
+          }
+        }
+        setPlanHydrated(true);
+        setAuthLoading(false);
+      })
+      .catch((error) => {
+        if (!active) return;
+        if (!(error instanceof ApiError && error.status === 401)) {
+          setAuthError(error instanceof TypeError ? '无法连接服务端，请先启动 PostgreSQL 与 API 服务' : error instanceof Error ? error.message : '无法连接服务端');
+        }
+        setAuthLoading(false);
+      });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!authUser || !planHydrated) return undefined;
+    const timer = window.setTimeout(() => {
+      savePlanApi(plan, planVersion)
+        .then(({ version }) => setPlanVersion(version))
+        .catch((error) => {
+          if (error instanceof ApiError && error.status === 409) {
+            message.error('规划已被其他人修改，请刷新页面后重试');
+          } else if (error instanceof ApiError && error.status === 403) {
+            message.error(error.message);
+          } else {
+            message.error('规划保存失败，请检查服务连接');
+          }
+        });
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [authUser, plan, planHydrated]);
+
+  const handleLogin = async (account: string, password: string) => {
+    try {
+      setAuthError('');
+      const result = await login(account, password);
+      setAuthUser(result.user);
+      const remote = await getPlan().catch((error) => {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      });
+      const nextPlan = remote?.plan ?? structuredClone(seedPlan);
+      setPlan({ ...nextPlan, currentUserId: personIdForUser(nextPlan, result.user) });
+      setPlanVersion(remote?.version ?? 0);
+      setPlanHydrated(true);
+    } catch (error) {
+      setAuthError(error instanceof TypeError ? '无法连接服务端，请先启动 PostgreSQL 与 API 服务' : error instanceof Error ? error.message : '登录失败');
+    }
+  };
+
+  const handleLogout = async () => {
+    await logout().catch(() => undefined);
+    setAuthUser(null);
+    setPlanHydrated(false);
+    setPlanVersion(0);
+  };
 
   const activeIteration = plan.iterations.find(
     (iteration) => iteration.id === plan.currentIterationId,
@@ -401,6 +523,13 @@ export default function RollingPlanPage() {
       });
   }, [activeIteration.id, analysisPeople, analysisTasks, insightView, ownerFilter, plan]);
 
+  if (authLoading) {
+    return <main className={styles.loginPage}><Card className={styles.loginCard} bordered={false}><Text>正在连接团队服务…</Text></Card></main>;
+  }
+  if (!authUser) {
+    return <LoginScreen onLogin={handleLogin} error={authError} oauthEnabled={oauthEnabled} passwordEnabled={passwordEnabled} />;
+  }
+
   const nextCode = (type: DemandType) => {
     const prefix = type === 'dpo' ? 'D' : 'N';
     const largest = plan.workItems
@@ -516,8 +645,7 @@ export default function RollingPlanPage() {
   };
 
   const resetDemo = () => {
-    clearPlan();
-    setPlan(structuredClone(seedPlan));
+    setPlan({ ...structuredClone(seedPlan), currentUserId: personIdForUser(seedPlan, authUser) });
     setOwnerFilter('all');
     setPersonTypeFilter('all');
     setTypeFilter('all');
@@ -561,18 +689,8 @@ export default function RollingPlanPage() {
         </div>
         <Space wrap className={styles.headerActions}>
           <div className={styles.identitySwitcher}>
-            <span>当前身份</span>
-            <Select
-              value={plan.currentUserId}
-              onChange={(currentUserId) => setPlan((current) => ({ ...current, currentUserId }))}
-              options={plan.people
-                .filter((person) => person.status === 'active')
-                .map((person) => {
-                  const type = plan.personnelTypes.find((candidate) => candidate.id === person.typeId);
-                  return { label: `${person.name} · ${type?.name ?? '未分类'}`, value: person.id };
-                })}
-              popupMatchSelectWidth={220}
-            />
+            <span>{authUser.teamName}</span>
+            <Text strong>{authUser.displayName}</Text>
           </div>
           {canViewTeam && (
             <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>
@@ -595,6 +713,7 @@ export default function RollingPlanPage() {
               新增事项
             </Button>
           )}
+          <Button icon={<LogoutOutlined />} onClick={handleLogout}>退出登录</Button>
         </Space>
       </header>
 
@@ -1169,6 +1288,7 @@ export default function RollingPlanPage() {
         onClose={() => setSettingsOpen(false)}
         plan={plan}
         setPlan={setPlan}
+        teamName={authUser.teamName}
       />
     </main>
   );
