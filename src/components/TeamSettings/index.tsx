@@ -295,6 +295,11 @@ export default function TeamSettings({ open, onClose, plan, setPlan }: TeamSetti
     message.success('迭代已删除');
   };
 
+  const setCurrentIteration = (iteration: Iteration) => {
+    setPlan((current) => ({ ...current, currentIterationId: iteration.id }));
+    message.success(`已切换当前迭代为 ${iteration.label}`);
+  };
+
   const peopleColumns = useMemo<ProColumns<Person>[]>(
     () => [
       {
@@ -445,13 +450,18 @@ export default function TeamSettings({ open, onClose, plan, setPlan }: TeamSetti
     {
       title: '操作',
       valueType: 'option',
-      width: 150,
+      width: 230,
       render: (_, iteration) =>
         canManageIterations ? (
-          <Space size={0}>
-            <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openIterationEditor(iteration)}>
+          <Space size={4} wrap>
+            <Button type="primary" ghost size="small" icon={<EditOutlined />} onClick={() => openIterationEditor(iteration)}>
               编辑
             </Button>
+            {iteration.id !== plan.currentIterationId && (
+              <Button type="default" size="small" onClick={() => setCurrentIteration(iteration)}>
+                设为当前
+              </Button>
+            )}
             <Popconfirm
               title="删除这个迭代？"
               description="仅能删除没有事项投入且不是当前迭代的迭代。"
@@ -460,7 +470,7 @@ export default function TeamSettings({ open, onClose, plan, setPlan }: TeamSetti
               cancelText="取消"
               okButtonProps={{ danger: true }}
             >
-              <Button type="link" danger size="small" icon={<DeleteOutlined />}>
+              <Button danger size="small" icon={<DeleteOutlined />}>
                 删除
               </Button>
             </Popconfirm>
