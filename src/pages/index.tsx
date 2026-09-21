@@ -99,6 +99,14 @@ interface RoutineCapacityRow {
   available: number;
 }
 
+interface RoutineCapacityMatrixRow {
+  key: string;
+  personId: string;
+  personName: string;
+  personType: string;
+  iterations: Record<string, RoutineCapacityRow>;
+}
+
 const typeMeta: Record<DemandType, { label: string; shortLabel: string; color: string }> = {
   dpo: { label: 'DPO / 产品建设', shortLabel: 'DPO', color: 'blue' },
   routine: { label: '日常事项', shortLabel: '日常', color: 'green' },
@@ -125,6 +133,7 @@ export default function RollingPlanPage() {
   const [editingItem, setEditingItem] = useState<WorkItem | null>(null);
   const [workModalOpen, setWorkModalOpen] = useState(false);
   const [routineCapacityOpen, setRoutineCapacityOpen] = useState(false);
+  const [capacityDemandType, setCapacityDemandType] = useState<DemandType>('routine');
   const [capacityPerson, setCapacityPerson] = useState<Person | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workForm] = Form.useForm<WorkItemFormValues>();
@@ -206,9 +215,11 @@ export default function RollingPlanPage() {
         .flatMap((person) =>
           plan.iterations.map((iteration) => {
             const allocated = plan.workItems
-              .filter((item) => item.personId === person.id && item.type === 'routine')
+              .filter((item) => item.personId === person.id && item.type === capacityDemandType)
               .reduce((sum, item) => sum + (item.allocations[iteration.id]?.days ?? 0), 0);
-            const capacity = person.iterationCapacityDays * person.routineRatio;
+            const capacity = person.iterationCapacityDays * (
+              capacityDemandType === 'routine' ? person.routineRatio : person.dpoRatio
+            );
             return {
               key: `${person.id}-${iteration.id}`,
               personId: person.id,
@@ -225,7 +236,26 @@ export default function RollingPlanPage() {
           }),
         )
         .sort((left, right) => right.available - left.available),
-    [analysisPeople, plan.iterations, plan.personnelTypes, plan.workItems],
+    [analysisPeople, capacityDemandType, plan.iterations, plan.personnelTypes, plan.workItems],
+  );
+
+  const routineCapacityMatrix = useMemo<RoutineCapacityMatrixRow[]>(
+    () =>
+      analysisPeople.map((person) => ({
+        key: person.id,
+        personId: person.id,
+        personName: person.name,
+        personType: plan.personnelTypes.find((type) => type.id === person.typeId)?.name ?? '未分类',
+        iterations: Object.fromEntries(
+          plan.iterations.map((iteration) => [
+            iteration.id,
+            routineCapacityRows.find(
+              (row) => row.personId === person.id && row.iterationId === iteration.id,
+            )!,
+          ]),
+        ),
+      })),
+    [analysisPeople, plan.iterations, plan.personnelTypes, routineCapacityRows],
   );
 
   const insightItems = useMemo<InsightItem[]>(() => {
@@ -287,6 +317,10 @@ export default function RollingPlanPage() {
           hint: `参考 ${formatDays(dpoCapacity)} 天`,
           ratio: dpoCapacity ? dpoDays / dpoCapacity : 0,
           danger: dpoDays > dpoCapacity,
+          onClick: () => {
+            setCapacityDemandType('dpo');
+            setRoutineCapacityOpen(true);
+          },
         },
         {
           key: 'quarter-routine',
@@ -296,7 +330,10 @@ export default function RollingPlanPage() {
           hint: `参考 ${formatDays(routineCapacity)} 天`,
           ratio: routineCapacity ? routineDays / routineCapacity : 0,
           danger: routineDays > routineCapacity,
-          onClick: () => setRoutineCapacityOpen(true),
+          onClick: () => {
+            setCapacityDemandType('routine');
+            setRoutineCapacityOpen(true);
+          },
         },
         {
           key: 'quarter-total',
@@ -1031,58 +1068,66 @@ export default function RollingPlanPage() {
 
       <Modal
         width={980}
-        title="日常容量速查"
+        title={`${typeMeta[capacityDemandType].shortLabel}容量速查`}
         open={routineCapacityOpen}
         onCancel={() => setRoutineCapacityOpen(false)}
         footer={null}
         destroyOnHidden
       >
         <Text type="secondary">
-          按当前负责人和人员类型筛选范围，展示每个人每个迭代的日常参考容量、已排投入与可用人天；点击行可定位到对应迭代。
+          按当前负责人和人员类型筛选范围，展示每个人每个迭代的{typeMeta[capacityDemandType].shortLabel}参考容量、已排投入与可用人天；点击单元格可定位到对应迭代。
         </Text>
-        <Table<RoutineCapacityRow>
+        <Table<RoutineCapacityMatrixRow>
           rowKey="key"
           size="small"
           pagination={false}
-          scroll={{ x: 860, y: 460 }}
+          scroll={{ x: 320 + plan.iterations.length * 150, y: 460 }}
           style={{ marginTop: 14 }}
-          dataSource={routineCapacityRows}
+          dataSource={routineCapacityMatrix}
           onRow={(record) => ({
             onClick: () => {
               setOwnerFilter(record.personId);
-              setPlan((current) => ({ ...current, currentIterationId: record.iterationId }));
               setRoutineCapacityOpen(false);
             },
             style: { cursor: 'pointer' },
           })}
           columns={[
-            { title: '人员', dataIndex: 'personName', width: 90, fixed: 'left' },
-            { title: '人员类型', dataIndex: 'personType', width: 90 },
-            {
-              title: '迭代',
-              dataIndex: 'iterationLabel',
-              width: 170,
-              render: (_: string, record: RoutineCapacityRow) => (
-                <span>
-                  <b>{record.iterationLabel}</b>{' '}
+            { title: '人员', dataIndex: 'personName', width: 100, fixed: 'left' },
+            { title: '人员类型', dataIndex: 'personType', width: 90, fixed: 'left' },
+            ...plan.iterations.map((iteration) => ({
+              title: (
+                <div>
+                  <b>{iteration.label}</b>
+                  <br />
                   <Text type="secondary">
-                    {dayjs(record.startDate).format('M/D')}—{dayjs(record.endDate).format('M/D')}
+                    {dayjs(iteration.startDate).format('M/D')}—{dayjs(iteration.endDate).format('M/D')}
                   </Text>
-                </span>
+                </div>
               ),
-            },
-            { title: '日常参考容量', dataIndex: 'capacity', width: 110, render: (value: number) => `${formatDays(value)} 天` },
-            { title: '日常已排', dataIndex: 'allocated', width: 90, render: (value: number) => `${formatDays(value)} 天` },
-            {
-              title: '可用容量',
-              dataIndex: 'available',
-              width: 120,
-              render: (value: number) => (
-                <Tag color={value > 0 ? 'green' : value < 0 ? 'red' : 'default'}>
-                  {value > 0 ? `可排 ${formatDays(value)} 天` : value < 0 ? `超出 ${formatDays(Math.abs(value))} 天` : '已排满'}
-                </Tag>
-              ),
-            },
+              key: iteration.id,
+              width: 150,
+              render: (_: unknown, record: RoutineCapacityMatrixRow) => {
+                const cell = record.iterations[iteration.id]!;
+                return (
+                  <div
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setOwnerFilter(record.personId);
+                      setPlan((current) => ({ ...current, currentIterationId: iteration.id }));
+                      setRoutineCapacityOpen(false);
+                    }}
+                  >
+                    <Tag color={cell.available > 0 ? 'green' : cell.available < 0 ? 'red' : 'default'}>
+                      {cell.available > 0 ? `可排 ${formatDays(cell.available)} 天` : cell.available < 0 ? `超出 ${formatDays(Math.abs(cell.available))} 天` : '已排满'}
+                    </Tag>
+                    <br />
+                    <Text type="secondary">
+                      已排 {formatDays(cell.allocated)} / 容量 {formatDays(cell.capacity)} 天
+                    </Text>
+                  </div>
+                );
+              },
+            })),
           ]}
         />
       </Modal>
