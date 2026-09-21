@@ -103,6 +103,7 @@ export default function RollingPlanPage() {
   const [ownerFilter, setOwnerFilter] = useState('all');
   const [personTypeFilter, setPersonTypeFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState<'all' | DemandType>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | WorkStatus>('all');
   const [query, setQuery] = useState('');
   const [insightView, setInsightView] = useState<InsightView>('iteration');
   const [collapsedPeople, setCollapsedPeople] = useState<Set<string>>(new Set());
@@ -145,6 +146,7 @@ export default function RollingPlanPage() {
       const matchesOwner = ownerFilter === 'all' || item.personId === ownerFilter;
       const matchesPersonType = personTypeFilter === 'all' || person?.typeId === personTypeFilter;
       const matchesType = typeFilter === 'all' || item.type === typeFilter;
+      const matchesStatus = statusFilter === 'all' || item.status === statusFilter;
       const matchesQuery =
         !normalized ||
         [
@@ -156,9 +158,9 @@ export default function RollingPlanPage() {
           .join(' ')
           .toLowerCase()
           .includes(normalized);
-      return matchesOwner && matchesPersonType && matchesType && matchesQuery;
+      return matchesOwner && matchesPersonType && matchesType && matchesStatus && matchesQuery;
     });
-  }, [ownerFilter, personTypeFilter, plan.people, plan.workItems, query, typeFilter]);
+  }, [ownerFilter, personTypeFilter, plan.people, plan.workItems, query, statusFilter, typeFilter]);
 
   const analysisTasks = useMemo(
     () =>
@@ -166,9 +168,10 @@ export default function RollingPlanPage() {
         (item) =>
           (ownerFilter === 'all' || item.personId === ownerFilter) &&
           (personTypeFilter === 'all' || plan.people.find((person) => person.id === item.personId)?.typeId === personTypeFilter) &&
-          (typeFilter === 'all' || item.type === typeFilter),
+          (typeFilter === 'all' || item.type === typeFilter) &&
+          (statusFilter === 'all' || item.status === statusFilter),
       ),
-    [ownerFilter, personTypeFilter, plan.people, plan.workItems, typeFilter],
+    [ownerFilter, personTypeFilter, plan.people, plan.workItems, statusFilter, typeFilter],
   );
 
   const analysisPeople = useMemo(
@@ -429,6 +432,7 @@ export default function RollingPlanPage() {
     setOwnerFilter('all');
     setPersonTypeFilter('all');
     setTypeFilter('all');
+    setStatusFilter('all');
     setQuery('');
     setCollapsedPeople(new Set());
     message.success('已恢复六人示例数据');
@@ -636,6 +640,17 @@ export default function RollingPlanPage() {
                 { label: '全部类型', value: 'all' },
                 { label: 'DPO', value: 'dpo' },
                 { label: '日常事项', value: 'routine' },
+              ]}
+            />
+          </label>
+          <label>
+            <span>状态</span>
+            <Select
+              value={statusFilter}
+              onChange={setStatusFilter}
+              options={[
+                { label: '全部状态', value: 'all' },
+                ...Object.entries(statusMeta).map(([value, meta]) => ({ label: meta.label, value })),
               ]}
             />
           </label>
