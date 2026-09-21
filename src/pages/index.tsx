@@ -951,8 +951,10 @@ export default function RollingPlanPage() {
             {plan.iterations.map((iteration) => (
               <div className={styles.cycleRow} key={iteration.id}>
                 <div>
-                  <Text strong>{iteration.label}</Text>
-                  <Text type="secondary">{dayjs(iteration.startDate).format('M/D')}</Text>
+                  <Text strong>{iteration.label} 迭代</Text>
+                  <Text type="secondary">
+                    {dayjs(iteration.startDate).format('YYYY.MM.DD')} — {dayjs(iteration.endDate).format('YYYY.MM.DD')}
+                  </Text>
                 </div>
                 <Form.Item name={['allocations', iteration.id, 'delivery']} noStyle>
                   <Input placeholder="本轮要完成什么" />
