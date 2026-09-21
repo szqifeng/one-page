@@ -89,6 +89,37 @@ body {
   color: #c7d6e1;
   font-size: 12px;
 
+  .teamLabel {
+    padding: 4px 9px;
+    color: #d8f4e9;
+    border: 1px solid rgb(143 215 190 / 38%);
+    border-radius: 999px;
+    background: rgb(79 164 137 / 18%);
+    font-weight: 650;
+  }
+
+  .identityDivider {
+    width: 1px;
+    height: 18px;
+    background: rgb(199 214 225 / 35%);
+  }
+
+  .userIdentity {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+
+    small {
+      color: #9eb2c1;
+      font-size: 10px;
+    }
+
+    :global(.ant-typography) {
+      color: #fff;
+      font-size: 12px;
+    }
+  }
+
   :global(.ant-select) {
     width: 154px;
   }

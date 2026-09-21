@@ -689,8 +689,12 @@ export default function RollingPlanPage() {
         </div>
         <Space wrap className={styles.headerActions}>
           <div className={styles.identitySwitcher}>
-            <span>{authUser.teamName}</span>
-            <Text strong>{authUser.displayName}</Text>
+            <span className={styles.teamLabel}>{authUser.teamName}</span>
+            <span className={styles.identityDivider} />
+            <span className={styles.userIdentity}>
+              <small>当前用户</small>
+              <Text strong>{authUser.displayName}</Text>
+            </span>
           </div>
           {canViewTeam && (
             <Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>
