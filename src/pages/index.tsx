@@ -26,6 +26,7 @@ import {
   Select,
   Space,
   Statistic,
+  Table,
   Tag,
   Typography,
   message,
@@ -84,6 +85,20 @@ interface InsightItem {
   onClick?: () => void;
 }
 
+interface RoutineCapacityRow {
+  key: string;
+  personId: string;
+  personName: string;
+  personType: string;
+  iterationId: string;
+  iterationLabel: string;
+  startDate: string;
+  endDate: string;
+  capacity: number;
+  allocated: number;
+  available: number;
+}
+
 const typeMeta: Record<DemandType, { label: string; shortLabel: string; color: string }> = {
   dpo: { label: 'DPO / 产品建设', shortLabel: 'DPO', color: 'blue' },
   routine: { label: '日常事项', shortLabel: '日常', color: 'green' },
@@ -109,6 +124,7 @@ export default function RollingPlanPage() {
   const [collapsedPeople, setCollapsedPeople] = useState<Set<string>>(new Set());
   const [editingItem, setEditingItem] = useState<WorkItem | null>(null);
   const [workModalOpen, setWorkModalOpen] = useState(false);
+  const [routineCapacityOpen, setRoutineCapacityOpen] = useState(false);
   const [capacityPerson, setCapacityPerson] = useState<Person | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workForm] = Form.useForm<WorkItemFormValues>();
@@ -184,6 +200,34 @@ export default function RollingPlanPage() {
     [ownerFilter, personTypeFilter, plan.people],
   );
 
+  const routineCapacityRows = useMemo<RoutineCapacityRow[]>(
+    () =>
+      analysisPeople
+        .flatMap((person) =>
+          plan.iterations.map((iteration) => {
+            const allocated = plan.workItems
+              .filter((item) => item.personId === person.id && item.type === 'routine')
+              .reduce((sum, item) => sum + (item.allocations[iteration.id]?.days ?? 0), 0);
+            const capacity = person.iterationCapacityDays * person.routineRatio;
+            return {
+              key: `${person.id}-${iteration.id}`,
+              personId: person.id,
+              personName: person.name,
+              personType: plan.personnelTypes.find((type) => type.id === person.typeId)?.name ?? '未分类',
+              iterationId: iteration.id,
+              iterationLabel: iteration.label,
+              startDate: iteration.startDate,
+              endDate: iteration.endDate,
+              capacity,
+              allocated,
+              available: capacity - allocated,
+            };
+          }),
+        )
+        .sort((left, right) => right.available - left.available),
+    [analysisPeople, plan.iterations, plan.personnelTypes, plan.workItems],
+  );
+
   const insightItems = useMemo<InsightItem[]>(() => {
     const totalCapacity = analysisPeople.reduce(
       (sum, person) => sum + personQuarterCapacity(plan, person),
@@ -252,6 +296,7 @@ export default function RollingPlanPage() {
           hint: `参考 ${formatDays(routineCapacity)} 天`,
           ratio: routineCapacity ? routineDays / routineCapacity : 0,
           danger: routineDays > routineCapacity,
+          onClick: () => setRoutineCapacityOpen(true),
         },
         {
           key: 'quarter-total',
@@ -982,6 +1027,64 @@ export default function RollingPlanPage() {
           </div>
           <Text type="secondary">未安排的迭代保持空白；人天支持 0.5 天精度。</Text>
         </Form>
+      </Modal>
+
+      <Modal
+        width={980}
+        title="日常容量速查"
+        open={routineCapacityOpen}
+        onCancel={() => setRoutineCapacityOpen(false)}
+        footer={null}
+        destroyOnHidden
+      >
+        <Text type="secondary">
+          按当前负责人和人员类型筛选范围，展示每个人每个迭代的日常参考容量、已排投入与可用人天；点击行可定位到对应迭代。
+        </Text>
+        <Table<RoutineCapacityRow>
+          rowKey="key"
+          size="small"
+          pagination={false}
+          scroll={{ x: 860, y: 460 }}
+          style={{ marginTop: 14 }}
+          dataSource={routineCapacityRows}
+          onRow={(record) => ({
+            onClick: () => {
+              setOwnerFilter(record.personId);
+              setPlan((current) => ({ ...current, currentIterationId: record.iterationId }));
+              setRoutineCapacityOpen(false);
+            },
+            style: { cursor: 'pointer' },
+          })}
+          columns={[
+            { title: '人员', dataIndex: 'personName', width: 90, fixed: 'left' },
+            { title: '人员类型', dataIndex: 'personType', width: 90 },
+            {
+              title: '迭代',
+              dataIndex: 'iterationLabel',
+              width: 170,
+              render: (_: string, record: RoutineCapacityRow) => (
+                <span>
+                  <b>{record.iterationLabel}</b>{' '}
+                  <Text type="secondary">
+                    {dayjs(record.startDate).format('M/D')}—{dayjs(record.endDate).format('M/D')}
+                  </Text>
+                </span>
+              ),
+            },
+            { title: '日常参考容量', dataIndex: 'capacity', width: 110, render: (value: number) => `${formatDays(value)} 天` },
+            { title: '日常已排', dataIndex: 'allocated', width: 90, render: (value: number) => `${formatDays(value)} 天` },
+            {
+              title: '可用容量',
+              dataIndex: 'available',
+              width: 120,
+              render: (value: number) => (
+                <Tag color={value > 0 ? 'green' : value < 0 ? 'red' : 'default'}>
+                  {value > 0 ? `可排 ${formatDays(value)} 天` : value < 0 ? `超出 ${formatDays(Math.abs(value))} 天` : '已排满'}
+                </Tag>
+              ),
+            },
+          ]}
+        />
       </Modal>
 
       <Modal
