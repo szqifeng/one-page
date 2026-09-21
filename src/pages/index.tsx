@@ -379,7 +379,6 @@ export default function RollingPlanPage() {
           ratio: capacity ? value / capacity : 0,
           danger: value > capacity,
           selected: ownerFilter === person.id,
-          onClick: () => setOwnerFilter(person.id),
         };
       });
     }
