@@ -1,0 +1,42 @@
+.intro {
+  padding: 2px 0 18px;
+
+  h4 {
+    margin: 0 0 4px !important;
+  }
+}
+
+.identityCell,
+.permissionLabel {
+  display: flex;
+  flex-direction: column;
+}
+
+.fullWidth {
+  width: 100%;
+}
+
+.ratioInput {
+  width: 100%;
+}
+
+.permissionGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+
+  :global(.ant-checkbox-wrapper) {
+    align-items: flex-start;
+    margin-inline-start: 0;
+    padding: 12px;
+    border: 1px solid #e1e8e5;
+    border-radius: 9px;
+  }
+}
+
+@media (max-width: 720px) {
+  .permissionGrid {
+    grid-template-columns: 1fr;
+  }
+}
