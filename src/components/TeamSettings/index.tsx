@@ -451,31 +451,41 @@ export default function TeamSettings({ open, onClose, plan, setPlan }: TeamSetti
       title: '操作',
       valueType: 'option',
       width: 230,
-      render: (_, iteration) =>
-        canManageIterations ? (
-          <Space size={4} wrap>
-            <Button type="primary" ghost size="small" icon={<EditOutlined />} onClick={() => openIterationEditor(iteration)}>
-              编辑
+      render: (_, iteration) => (
+        <Space size={4} wrap>
+          <Button
+            type="primary"
+            ghost
+            size="small"
+            icon={<EditOutlined />}
+            disabled={!canManageIterations}
+            onClick={() => openIterationEditor(iteration)}
+          >
+            编辑
+          </Button>
+          <Button
+            type="default"
+            size="small"
+            disabled={!canManageIterations || iteration.id === plan.currentIterationId}
+            onClick={() => setCurrentIteration(iteration)}
+          >
+            {iteration.id === plan.currentIterationId ? '当前迭代' : '设为当前'}
+          </Button>
+          <Popconfirm
+            title="删除这个迭代？"
+            description="仅能删除没有事项投入且不是当前迭代的迭代。"
+            onConfirm={() => deleteIteration(iteration)}
+            okText="删除"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            disabled={!canManageIterations}
+          >
+            <Button danger size="small" icon={<DeleteOutlined />} disabled={!canManageIterations}>
+              删除
             </Button>
-            {iteration.id !== plan.currentIterationId && (
-              <Button type="default" size="small" onClick={() => setCurrentIteration(iteration)}>
-                设为当前
-              </Button>
-            )}
-            <Popconfirm
-              title="删除这个迭代？"
-              description="仅能删除没有事项投入且不是当前迭代的迭代。"
-              onConfirm={() => deleteIteration(iteration)}
-              okText="删除"
-              cancelText="取消"
-              okButtonProps={{ danger: true }}
-            >
-              <Button danger size="small" icon={<DeleteOutlined />}>
-                删除
-              </Button>
-            </Popconfirm>
-          </Space>
-        ) : null,
+          </Popconfirm>
+        </Space>
+      ),
     },
   ];
 
@@ -553,13 +563,17 @@ export default function TeamSettings({ open, onClose, plan, setPlan }: TeamSetti
                   dataSource={plan.iterations}
                   columns={iterationColumns}
                   toolBarRender={() =>
-                    canManageIterations
-                      ? [
-                          <Button key="add-iteration" type="primary" icon={<PlusOutlined />} onClick={() => openIterationEditor()}>
-                            添加迭代
-                          </Button>,
-                        ]
-                      : []
+                    [
+                      <Button
+                        key="add-iteration"
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        disabled={!canManageIterations}
+                        onClick={() => openIterationEditor()}
+                      >
+                        添加迭代
+                      </Button>,
+                    ]
                   }
                 />
               ),
