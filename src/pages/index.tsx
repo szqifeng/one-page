@@ -209,9 +209,17 @@ export default function RollingPlanPage() {
     [ownerFilter, personTypeFilter, plan.people],
   );
 
+  const capacityPeople = useMemo(
+    () =>
+      analysisPeople.filter((person) =>
+        capacityDemandType === 'routine' ? person.routineRatio > 0 : person.dpoRatio > 0,
+      ),
+    [analysisPeople, capacityDemandType],
+  );
+
   const routineCapacityRows = useMemo<RoutineCapacityRow[]>(
     () =>
-      analysisPeople
+      capacityPeople
         .flatMap((person) =>
           plan.iterations.map((iteration) => {
             const allocated = plan.workItems
@@ -236,12 +244,12 @@ export default function RollingPlanPage() {
           }),
         )
         .sort((left, right) => right.available - left.available),
-    [analysisPeople, capacityDemandType, plan.iterations, plan.personnelTypes, plan.workItems],
+    [capacityPeople, capacityDemandType, plan.iterations, plan.personnelTypes, plan.workItems],
   );
 
   const routineCapacityMatrix = useMemo<RoutineCapacityMatrixRow[]>(
     () =>
-      analysisPeople.map((person) => ({
+      capacityPeople.map((person) => ({
         key: person.id,
         personId: person.id,
         personName: person.name,
@@ -255,7 +263,7 @@ export default function RollingPlanPage() {
           ]),
         ),
       })),
-    [analysisPeople, plan.iterations, plan.personnelTypes, routineCapacityRows],
+    [capacityPeople, plan.iterations, plan.personnelTypes, routineCapacityRows],
   );
 
   const insightItems = useMemo<InsightItem[]>(() => {
@@ -1084,6 +1092,7 @@ export default function RollingPlanPage() {
           scroll={{ x: 320 + plan.iterations.length * 150, y: 460 }}
           style={{ marginTop: 14 }}
           dataSource={routineCapacityMatrix}
+          locale={{ emptyText: `当前筛选范围没有配置${typeMeta[capacityDemandType].shortLabel}投入比例的人员` }}
           onRow={(record) => ({
             onClick: () => {
               setOwnerFilter(record.personId);
