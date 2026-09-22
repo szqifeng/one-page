@@ -5,4 +5,8 @@ dist
 src/.umi
 coverage
 *.log
-季度双周滚动规划_源码.zip
+src/.umi-production
+.env
+.env.*
+!.env.example
+*.dump

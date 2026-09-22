@@ -1,6 +1,6 @@
 # 季度双周滚动规划看板
 
-一个面向混合型团队的一页纸规划工具：用季度视角管理总投入，用双周视角管理近期承诺，并持续观察每个人的 DPO 与日常需求容量。当前工程由参考包中的单文件 HTML 版本迁移为 Umi Max + React 应用。
+一个面向混合型团队的一页纸规划工具：用季度视角管理总投入，用双周视角管理近期承诺，并持续观察每个人的 DPO 与日常需求容量。采用 Umi Max + React、Express 和 PostgreSQL，支持 Docker Compose 部署。
 
 ## 当前能力
 
@@ -63,13 +63,22 @@ OAuth2 需要配置 `OAUTH2_AUTHORIZATION_URL`、`OAUTH2_TOKEN_URL`、`OAUTH2_PR
 
 - [需求说明](docs/requirements.md)
 - [Docker 部署说明](docs/deployment.md)
+- [贡献指南与目录约定](CONTRIBUTING.md)
+- [安全问题反馈](SECURITY.md)
+- [变更记录](CHANGELOG.md)
+- [发布流程](docs/releasing.md)
 
 ## 验证
 
 ```bash
+pnpm run setup
+pnpm typecheck
+pnpm lint
 pnpm test
 pnpm build
 ```
+
+GitHub Actions 会在 main 推送和 Pull Request 时执行检查与 Docker 镜像构建。首次开发建议使用 Node.js 22 和 pnpm 8.15.9。
 
 服务端会根据登录用户、所属团队和规划中的角色再次校验权限；前端按钮控制不能替代服务端鉴权。规划写入使用版本号乐观锁，避免多人同时编辑时静默覆盖。
 

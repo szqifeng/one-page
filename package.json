@@ -2,6 +2,14 @@
   "name": "one-paper-rolling-plan",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@8.15.9",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/szqifeng/one-page.git"
+  },
+  "bugs": {
+    "url": "https://github.com/szqifeng/one-page/issues"
+  },
   "license": "PolyForm-Noncommercial-1.0.0",
   "description": "团队季度双周滚动规划一页纸看板",
   "scripts": {
@@ -10,6 +18,7 @@
     "server:dev": "node --watch server/index.js",
     "build": "max build",
     "setup": "max setup",
+    "typecheck": "tsc --noEmit",
     "test": "jest --runInBand",
     "lint": "max lint"
   },

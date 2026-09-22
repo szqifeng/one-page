@@ -5,3 +5,7 @@ src/.umi-production
 .DS_Store
 coverage
 *.log
+.env
+.env.*
+!.env.example
+*.dump
