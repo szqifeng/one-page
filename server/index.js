@@ -161,6 +161,19 @@ function canEditPlan(plan, user, nextState) {
   return true;
 }
 
+function countWorkdays(startDate, endDate) {
+  const cursor = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  if (Number.isNaN(cursor.getTime()) || Number.isNaN(end.getTime()) || end < cursor) return 0;
+  let count = 0;
+  while (cursor <= end) {
+    const weekday = cursor.getUTCDay();
+    if (weekday !== 0 && weekday !== 6) count += 1;
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return count;
+}
+
 function validQuarterConfiguration(plan) {
   if (!Array.isArray(plan.quarters) || plan.quarters.length === 0) return false;
   const ids = new Set();
@@ -178,6 +191,16 @@ function validQuarterConfiguration(plan) {
     if (yearCounts.get(quarter.year) > 3) return false;
     if (!quarter.iterations.some((iteration) => iteration.id === quarter.currentIterationId)) return false;
     if (quarter.workItems.some((item) => !Number.isFinite(item.progress) || item.progress < 0 || item.progress > 100)) return false;
+    const iterationWorkdays = new Map(quarter.iterations.map((iteration) => [
+      iteration.id,
+      countWorkdays(iteration.startDate, iteration.endDate),
+    ]));
+    if ([...iterationWorkdays.values()].some((workdays) => workdays === 0)) return false;
+    if (quarter.workItems.some((item) => Object.entries(item.allocations || {}).some(([iterationId, allocation]) =>
+      !iterationWorkdays.has(iterationId)
+      || !Number.isFinite(allocation.days)
+      || allocation.days < 0
+      || allocation.days > iterationWorkdays.get(iterationId)))) return false;
     const sortedIterations = quarter.iterations.slice().sort((left, right) => left.startDate.localeCompare(right.startDate));
     const startDate = sortedIterations[0]?.startDate;
     const endDate = sortedIterations.at(-1)?.endDate;
@@ -366,7 +389,7 @@ app.put('/api/plan', auth, async (req, res, next) => {
       return res.status(400).json({ message: '规划数据格式不正确' });
     }
     if (!validQuarterConfiguration(plan)) {
-      return res.status(400).json({ message: '季度或事项进度配置无效；每年最多 3 个季度，进度必须为 0–100%' });
+      return res.status(400).json({ message: '规划配置无效；每年最多 3 个季度，进度须为 0–100%，事项投入不得超过迭代工作日' });
     }
     const current = await getPlan(req.user.teamId);
     if (!current && !permissionKeys(plan, req.user).has('plan.edit_all')) {

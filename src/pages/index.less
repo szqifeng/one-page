@@ -4,6 +4,12 @@
 @mint: #3dbd9c;
 @line: #e1e9ee;
 @surface: #f4f7fa;
+@person-col: 126px;
+@type-col: 88px;
+@code-col: 70px;
+@task-col: 150px;
+@status-col: 118px;
+@fixed-columns-width: @person-col + @type-col + @code-col + @task-col + @status-col;
 
 * {
   box-sizing: border-box;
@@ -211,6 +217,30 @@ body {
   min-height: 108px;
   padding: 14px 15px;
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-color: #9eb4c0 #edf2f4;
+  scrollbar-width: thin;
+
+  &:focus-visible {
+    outline: 2px solid #60c5a5;
+    outline-offset: -2px;
+  }
+
+  &::-webkit-scrollbar {
+    height: 9px;
+  }
+
+  &::-webkit-scrollbar-track {
+    border-radius: 999px;
+    background: #edf2f4;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    border: 2px solid #edf2f4;
+    border-radius: 999px;
+    background: #9eb4c0;
+  }
 }
 
 .insightItem {
@@ -225,6 +255,7 @@ body {
   border: 1px solid #e0eaee;
   border-radius: 9px;
   background: #fcfefe;
+  scroll-snap-align: start;
   text-align: left;
 
   &:not(:disabled) {
@@ -251,6 +282,12 @@ body {
     color: #859aa7;
     font-size: 11px;
   }
+}
+
+.scrollableInsightBody .insightItem {
+  flex: 0 0 220px;
+  min-width: 220px;
+  max-width: 220px;
 }
 
 .selectedInsight {
@@ -315,7 +352,7 @@ body {
 
 .board {
   width: 100%;
-  min-width: 1961px;
+  min-width: @fixed-columns-width + 158px;
   border-spacing: 0;
   border-collapse: separate;
   table-layout: fixed;
@@ -364,11 +401,11 @@ body {
   width: 48px;
 }
 
-.personColumn { width: 126px; }
-.typeColumn { width: 88px; }
-.codeColumn { width: 70px; }
-.taskColumn { width: 150px; }
-.statusColumn { width: 118px; }
+.personColumn { width: @person-col; }
+.typeColumn { width: @type-col; }
+.codeColumn { width: @code-col; }
+.taskColumn { width: @task-col; }
+.statusColumn { width: @status-col; }
 .deliveryColumn { width: 135px; }
 .daysColumn { width: 48px; }
 .totalColumn { width: 78px; }
@@ -385,12 +422,12 @@ body {
 }
 
 .fixedA { left: 0; }
-.fixedB { left: 126px; }
-.fixedC { left: 214px; }
-.fixedD { left: 284px; }
+.fixedB { left: @person-col; }
+.fixedC { left: @person-col + @type-col; }
+.fixedD { left: @person-col + @type-col + @code-col; }
 
 .fixedE {
-  left: 434px;
+  left: @person-col + @type-col + @code-col + @task-col;
   box-shadow: 3px 0 5px rgb(33 61 75 / 7%);
 }
 
@@ -427,8 +464,8 @@ thead .fixedE {
   position: sticky;
   left: 0;
   z-index: 20;
-  width: 126px;
-  max-width: 126px;
+  width: @person-col;
+  max-width: @person-col;
   overflow: hidden;
   background: #eaf1f5 !important;
   white-space: nowrap;
@@ -437,10 +474,10 @@ thead .fixedE {
 
 .personSummaryInfo {
   position: sticky;
-  left: 126px;
+  left: @person-col;
   z-index: 20;
-  width: 426px;
-  max-width: 426px;
+  width: @type-col + @code-col + @task-col + @status-col;
+  max-width: @type-col + @code-col + @task-col + @status-col;
   overflow: hidden;
   background: #eaf1f5 !important;
   box-shadow: 3px 0 5px rgb(33 61 75 / 7%);
@@ -476,10 +513,10 @@ thead .fixedE {
 
 .fixedGroupInfo {
   position: sticky;
-  left: 214px;
+  left: @person-col + @type-col;
   z-index: 20;
-  width: 338px;
-  max-width: 338px;
+  width: @code-col + @task-col + @status-col;
+  max-width: @code-col + @task-col + @status-col;
   overflow: hidden;
   background: #f5f9fa !important;
   box-shadow: 3px 0 5px rgb(33 61 75 / 7%);
@@ -602,10 +639,10 @@ thead .fixedE {
 
 .fixedAddCell {
   position: sticky;
-  left: 214px;
+  left: @person-col + @type-col;
   z-index: 20;
-  width: 308px;
-  max-width: 308px;
+  width: @code-col + @task-col + @status-col;
+  max-width: @code-col + @task-col + @status-col;
   overflow: hidden;
   background: #fbfcfd !important;
   box-shadow: 3px 0 5px rgb(33 61 75 / 7%);

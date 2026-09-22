@@ -33,6 +33,7 @@ import type {
 } from '@/types/planning';
 import { hasPermission, permissionCatalog } from '@/utils/permissions';
 import { getBehaviorLogs, type BehaviorLog } from '@/utils/api';
+import { addWorkdaysInclusive, countWorkdays, nextWorkday, STANDARD_ITERATION_WORKDAYS } from '@/utils/workdays';
 import styles from './index.less';
 
 const { Text, Title } = Typography;
@@ -91,6 +92,8 @@ export default function TeamSettings({ open, onClose, plan, setPlan, teamName }:
   const [typeForm] = Form.useForm<TypeFormValues>();
   const [roleForm] = Form.useForm<RoleFormValues>();
   const [iterationForm] = Form.useForm<IterationFormValues>();
+  const iterationStartDate = Form.useWatch('startDate', iterationForm);
+  const iterationEndDate = Form.useWatch('endDate', iterationForm);
   const [behaviorLogs, setBehaviorLogs] = useState<BehaviorLog[]>([]);
   const [behaviorLogsLoading, setBehaviorLogsLoading] = useState(false);
 
@@ -249,13 +252,18 @@ export default function TeamSettings({ open, onClose, plan, setPlan, teamName }:
 
   const openIterationEditor = (iteration?: Iteration) => {
     const target = iteration ?? null;
+    const lastEndDate = plan.iterations
+      .map((candidate) => candidate.endDate)
+      .sort()
+      .at(-1);
+    const defaultStart = nextWorkday(lastEndDate ? dayjs(lastEndDate).add(1, 'day') : dayjs());
     setEditingIteration(target);
     iterationForm.resetFields();
     iterationForm.setFieldsValue(
       target ?? {
         label: `R${plan.iterations.length + 1}`,
-        startDate: dayjs().format('YYYY-MM-DD'),
-        endDate: dayjs().add(13, 'day').format('YYYY-MM-DD'),
+        startDate: defaultStart.format('YYYY-MM-DD'),
+        endDate: addWorkdaysInclusive(defaultStart, STANDARD_ITERATION_WORKDAYS).format('YYYY-MM-DD'),
       },
     );
     setIterationModalOpen(true);
@@ -265,6 +273,15 @@ export default function TeamSettings({ open, onClose, plan, setPlan, teamName }:
     const values = await iterationForm.validateFields();
     if (values.endDate < values.startDate) {
       iterationForm.setFields([{ name: 'endDate', errors: ['结束日期不能早于开始日期'] }]);
+      return;
+    }
+    const workdays = countWorkdays(values.startDate, values.endDate);
+    if (workdays === 0) {
+      iterationForm.setFields([{ name: 'endDate', errors: ['迭代范围内至少需要 1 个工作日'] }]);
+      return;
+    }
+    if (editingIteration && plan.workItems.some((item) => (item.allocations[editingIteration.id]?.days ?? 0) > workdays)) {
+      message.error(`已有事项投入超过新的 ${workdays} 个工作日，请先调整事项投入`);
       return;
     }
     const duplicate = plan.iterations.some(
@@ -347,7 +364,7 @@ export default function TeamSettings({ open, onClose, plan, setPlan, teamName }:
         ),
       },
       {
-        title: '每轮容量',
+        title: '标准双周容量',
         dataIndex: 'iterationCapacityDays',
         width: 100,
         render: (_, person) => `${person.iterationCapacityDays} 天`,
@@ -446,6 +463,7 @@ export default function TeamSettings({ open, onClose, plan, setPlan, teamName }:
     { title: '迭代名称', dataIndex: 'label', width: 120, render: (_, iteration) => <Tag color={iteration.id === plan.currentIterationId ? 'cyan' : 'default'}>{iteration.label}</Tag> },
     { title: '开始日期', dataIndex: 'startDate', width: 140, render: (_, iteration) => dayjs(iteration.startDate).format('YYYY-MM-DD') },
     { title: '结束日期', dataIndex: 'endDate', width: 140, render: (_, iteration) => dayjs(iteration.endDate).format('YYYY-MM-DD') },
+    { title: '工作日', width: 90, render: (_, iteration) => `${countWorkdays(iteration.startDate, iteration.endDate)} 天` },
     {
       title: '事项数',
       width: 80,
@@ -702,8 +720,8 @@ export default function TeamSettings({ open, onClose, plan, setPlan, teamName }:
           </Form.Item>
           <Row gutter={14}>
             <Col span={12}>
-              <Form.Item label="每轮可投入人天" name="iterationCapacityDays" rules={[{ required: true }]}>
-                <InputNumber min={0.5} max={14} step={0.5} addonAfter="天" className={styles.fullWidth} />
+              <Form.Item label="标准双周可投入人天" name="iterationCapacityDays" rules={[{ required: true }]}>
+                <InputNumber min={0.5} max={10} step={0.5} addonAfter="天" className={styles.fullWidth} />
               </Form.Item>
             </Col>
             <Col span={12}>
@@ -717,7 +735,7 @@ export default function TeamSettings({ open, onClose, plan, setPlan, teamName }:
               </Space.Compact>
             </Col>
           </Row>
-          <Text type="secondary">两项比例可按人员分别配置，例如 60% / 40%、80% / 20%；合计必须为 100%。</Text>
+          <Text type="secondary">标准双周按 10 个工作日计算，不足 10 个工作日的迭代会自动折算容量；两项比例合计必须为 100%。</Text>
         </Form>
       </Modal>
 
@@ -730,7 +748,19 @@ export default function TeamSettings({ open, onClose, plan, setPlan, teamName }:
         cancelText="取消"
         destroyOnHidden
       >
-        <Form form={iterationForm} layout="vertical" preserve={false}>
+        <Form
+          form={iterationForm}
+          layout="vertical"
+          preserve={false}
+          onValuesChange={(changedValues: Partial<IterationFormValues>) => {
+            if (changedValues.startDate && dayjs(changedValues.startDate).isValid()) {
+              iterationForm.setFieldValue(
+                'endDate',
+                addWorkdaysInclusive(changedValues.startDate, STANDARD_ITERATION_WORKDAYS).format('YYYY-MM-DD'),
+              );
+            }
+          }}
+        >
           <Form.Item label="迭代名称" name="label" rules={[{ required: true, message: '请输入迭代名称' }]}>
             <Input placeholder="例如：R8" />
           </Form.Item>
@@ -746,7 +776,9 @@ export default function TeamSettings({ open, onClose, plan, setPlan, teamName }:
               </Form.Item>
             </Col>
           </Row>
-          <Text type="secondary">删除迭代前需要先清空该迭代下的事项投入。</Text>
+          <Text type="secondary">
+            当前日期范围包含 {countWorkdays(iterationStartDate ?? '', iterationEndDate ?? '')} 个工作日（周一至周五）。删除迭代前需要先清空该迭代下的事项投入。
+          </Text>
         </Form>
       </Modal>
 

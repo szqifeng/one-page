@@ -1,4 +1,5 @@
-import type { DemandType, Person, PlanState, WorkItem } from '@/types/planning';
+import type { DemandType, Iteration, Person, PlanState, WorkItem } from '@/types/planning';
+import { iterationWorkdays, STANDARD_ITERATION_WORKDAYS } from '@/utils/workdays';
 
 export function sumItemDays(item: WorkItem): number {
   return Object.values(item.allocations).reduce((sum, allocation) => sum + allocation.days, 0);
@@ -25,8 +26,15 @@ export function personIterationDays(plan: PlanState, personId: string, iteration
   );
 }
 
+export function personIterationCapacity(person: Person, iteration: Iteration): number {
+  return person.iterationCapacityDays * iterationWorkdays(iteration) / STANDARD_ITERATION_WORKDAYS;
+}
+
 export function personQuarterCapacity(plan: PlanState, person: Person): number {
-  return person.iterationCapacityDays * plan.iterations.length;
+  return plan.iterations.reduce(
+    (sum, iteration) => sum + personIterationCapacity(person, iteration),
+    0,
+  );
 }
 
 export function typeBudget(plan: PlanState, person: Person, type: DemandType): number {
@@ -35,11 +43,12 @@ export function typeBudget(plan: PlanState, person: Person, type: DemandType): n
 }
 
 export function planMetrics(plan: PlanState, iterationId = plan.currentIterationId) {
+  const iteration = plan.iterations.find((candidate) => candidate.id === iterationId);
   const selectedItems = plan.workItems.filter(
     (item) => (item.allocations[iterationId]?.days ?? 0) > 0,
   );
   const iterationCapacity = plan.people.reduce(
-    (sum, person) => sum + person.iterationCapacityDays,
+    (sum, person) => sum + (iteration ? personIterationCapacity(person, iteration) : 0),
     0,
   );
   const iterationDays = selectedItems.reduce(
@@ -50,7 +59,7 @@ export function planMetrics(plan: PlanState, iterationId = plan.currentIteration
     .filter((item) => item.type === 'routine')
     .reduce((sum, item) => sum + (item.allocations[iterationId]?.days ?? 0), 0);
   const overloadedPeople = plan.people.filter(
-    (person) => personIterationDays(plan, person.id, iterationId) > person.iterationCapacityDays,
+    (person) => personIterationDays(plan, person.id, iterationId) > (iteration ? personIterationCapacity(person, iteration) : 0),
   ).length;
 
   return {

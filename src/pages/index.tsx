@@ -41,7 +41,6 @@ import { ApiError, getAuthConfig, getCurrentUser, getPlan, getPlanVersions, logi
 import type {
   Allocation,
   DemandType,
-  Iteration,
   Person,
   PlanState,
   QuarterPlan,
@@ -50,6 +49,7 @@ import type {
 } from '@/types/planning';
 import {
   formatDays,
+  personIterationCapacity,
   personIterationDays,
   personQuarterCapacity,
   personTotalDays,
@@ -58,6 +58,7 @@ import {
   sumItemDays,
   typeBudget,
 } from '@/utils/planning';
+import { buildWorkdayIterations, iterationWorkdays } from '@/utils/workdays';
 import {
   canEditItem,
   hasPermission,
@@ -372,9 +373,10 @@ export default function RollingPlanPage() {
             const allocated = plan.workItems
               .filter((item) => item.personId === person.id && (capacityDemandType === 'total' || item.type === capacityDemandType))
               .reduce((sum, item) => sum + (item.allocations[iteration.id]?.days ?? 0), 0);
+            const actualCapacity = personIterationCapacity(person, iteration);
             const capacity = capacityDemandType === 'total'
-              ? person.iterationCapacityDays
-              : person.iterationCapacityDays * (capacityDemandType === 'routine' ? person.routineRatio : person.dpoRatio);
+              ? actualCapacity
+              : actualCapacity * (capacityDemandType === 'routine' ? person.routineRatio : person.dpoRatio);
             return {
               key: `${person.id}-${iteration.id}`,
               personId: person.id,
@@ -420,11 +422,11 @@ export default function RollingPlanPage() {
     );
 
     if (insightView === 'iteration') {
-      const roundCapacity = analysisPeople.reduce(
-        (sum, person) => sum + person.iterationCapacityDays,
-        0,
-      );
       return plan.iterations.map((iteration) => {
+        const roundCapacity = analysisPeople.reduce(
+          (sum, person) => sum + personIterationCapacity(person, iteration),
+          0,
+        );
         const value = analysisTasks.reduce(
           (sum, item) => sum + (item.allocations[iteration.id]?.days ?? 0),
           0,
@@ -606,6 +608,13 @@ export default function RollingPlanPage() {
       workForm.setFields([{ name: 'code', errors: ['事项编号已存在'] }]);
       return;
     }
+    const overCapacityIteration = plan.iterations.find((iteration) =>
+      Number(values.allocations?.[iteration.id]?.days ?? 0) > iterationWorkdays(iteration),
+    );
+    if (overCapacityIteration) {
+      message.error(`${overCapacityIteration.label} 的投入不能超过 ${iterationWorkdays(overCapacityIteration)} 个工作日`);
+      return;
+    }
 
     const allocations = Object.fromEntries(
       plan.iterations.flatMap((iteration) => {
@@ -776,20 +785,10 @@ export default function RollingPlanPage() {
       return;
     }
     const quarterId = `quarter-${values.year}-${Date.now()}`;
-    const iterations: Iteration[] = [];
-    let cursor = start;
-    let index = 1;
-    while (!cursor.isAfter(end)) {
-      const proposedEnd = cursor.add(13, 'day');
-      const iterationEnd = proposedEnd.isAfter(end) ? end : proposedEnd;
-      iterations.push({
-        id: `${quarterId}-r${index}`,
-        label: `R${index}`,
-        startDate: cursor.format('YYYY-MM-DD'),
-        endDate: iterationEnd.format('YYYY-MM-DD'),
-      });
-      cursor = iterationEnd.add(1, 'day');
-      index += 1;
+    const iterations = buildWorkdayIterations(values.startDate, values.endDate, quarterId);
+    if (iterations.length === 0) {
+      message.error('季度日期范围内没有可用工作日');
+      return;
     }
     const quarter: QuarterPlan = {
       id: quarterId,
@@ -836,6 +835,7 @@ export default function RollingPlanPage() {
   );
 
   const totalColumns = 5 + plan.iterations.length * 2 + 2;
+  const boardMinWidth = 710 + plan.iterations.length * 183;
 
   return (
     <main className={styles.page}>
@@ -948,7 +948,11 @@ export default function RollingPlanPage() {
               点击人员、事项或迭代可定位到明细
             </Text>
           </div>
-          <div className={styles.insightBody}>
+          <div
+            className={`${styles.insightBody} ${insightView === 'task' ? styles.scrollableInsightBody : ''}`}
+            tabIndex={0}
+            aria-label="投入分析卡片，可横向滚动"
+          >
             {insightItems.map((item) => (
               <button
                 type="button"
@@ -1065,13 +1069,13 @@ export default function RollingPlanPage() {
 
         <section className={styles.boardCard}>
           <div className={styles.boardScroller}>
-            <table className={styles.board}>
+            <table className={styles.board} style={{ minWidth: boardMinWidth }}>
               <colgroup>
-                <col style={{ width: 126 }} />
-                <col style={{ width: 118 }} />
-                <col style={{ width: 70 }} />
-                <col style={{ width: 150 }} />
-                <col style={{ width: 88 }} />
+                <col className={styles.personColumn} />
+                <col className={styles.typeColumn} />
+                <col className={styles.codeColumn} />
+                <col className={styles.taskColumn} />
+                <col className={styles.statusColumn} />
                 {plan.iterations.map((iteration) => (
                   <Fragment key={iteration.id}>
                     <col className={styles.iterationDeliveryCol} />
@@ -1096,7 +1100,7 @@ export default function RollingPlanPage() {
                     >
                       {iteration.label}{' '}
                       <small>
-                        {dayjs(iteration.startDate).format('M/D')}—{dayjs(iteration.endDate).format('M/D')}
+                        {dayjs(iteration.startDate).format('M/D')}—{dayjs(iteration.endDate).format('M/D')} · {iterationWorkdays(iteration)} 工作日
                       </small>
                     </th>
                   ))}
@@ -1118,6 +1122,7 @@ export default function RollingPlanPage() {
                   const allPersonTasks = plan.workItems.filter((item) => item.personId === person.id);
                   const personTasks = visibleTasks.filter((item) => item.personId === person.id);
                   const roundDays = personIterationDays(plan, person.id, activeIteration.id);
+                  const roundCapacity = personIterationCapacity(person, activeIteration);
                   const quarterDays = personTotalDays(plan, person.id);
                   const quarterCapacity = personQuarterCapacity(plan, person);
                   return (
@@ -1135,8 +1140,8 @@ export default function RollingPlanPage() {
                         <td colSpan={4} className={`${styles.fixedB} ${styles.personSummaryInfo}`}>
                           <span>
                             本轮 {allPersonTasks.filter((item) => (item.allocations[activeIteration.id]?.days ?? 0) > 0).length} 项 ·{' '}
-                            <b className={roundDays > person.iterationCapacityDays ? styles.dangerText : ''}>
-                              {formatDays(roundDays)}/{formatDays(person.iterationCapacityDays)} 天
+                            <b className={roundDays > roundCapacity ? styles.dangerText : ''}>
+                              {formatDays(roundDays)}/{formatDays(roundCapacity)} 天
                             </b>
                           </span>
                           {canManageTeam && (
@@ -1168,6 +1173,7 @@ export default function RollingPlanPage() {
                           (sum, item) => sum + (item.allocations[activeIteration.id]?.days ?? 0),
                           0,
                         );
+                        const typeRoundCapacity = roundCapacity * (type === 'routine' ? person.routineRatio : person.dpoRatio);
                         return (
                           <Fragment key={`${person.id}-${type}`}>
                             <tr className={styles.typeSummaryRow}>
@@ -1176,7 +1182,7 @@ export default function RollingPlanPage() {
                               <td colSpan={3} className={styles.fixedGroupInfo}>
                                 本轮 {allTypeTasks.filter((item) => (item.allocations[activeIteration.id]?.days ?? 0) > 0).length} 项 ·{' '}
                                 {formatDays(typeRoundDays)} 天 / 参考{' '}
-                                {formatDays(person.iterationCapacityDays * (type === 'routine' ? person.routineRatio : person.dpoRatio))} 天
+                                {formatDays(typeRoundCapacity)} 天
                               </td>
                               <td colSpan={plan.iterations.length * 2}>
                                 本类型季度已排 {formatDays(typeDays)} 天 · 预算 {formatDays(budget)} 天
@@ -1438,7 +1444,7 @@ export default function RollingPlanPage() {
                   <Input placeholder="本轮要完成什么" />
                 </Form.Item>
                 <Form.Item name={['allocations', iteration.id, 'days']} noStyle>
-                  <InputNumber min={0} max={14} step={0.5} placeholder="人天" addonAfter="天" />
+                  <InputNumber min={0} max={iterationWorkdays(iteration)} step={0.5} placeholder="人天" addonAfter="天" />
                 </Form.Item>
               </div>
             ))}
@@ -1528,13 +1534,13 @@ export default function RollingPlanPage() {
             <Input value={capacityPerson?.name} disabled />
           </Form.Item>
           <Form.Item
-            label="每轮可投入人天"
+            label="标准双周可投入人天"
             name="iterationCapacityDays"
             rules={[{ required: true, message: '请输入每轮容量' }]}
           >
-            <InputNumber min={0.5} max={14} step={0.5} addonAfter="天" className={styles.fullWidth} />
+            <InputNumber min={0.5} max={10} step={0.5} addonAfter="天" className={styles.fullWidth} />
           </Form.Item>
-          <Text type="secondary">该容量用于本轮负载预警和季度剩余计算；DPO / 日常预算按每个人的配置比例计算。</Text>
+          <Text type="secondary">以 10 个工作日为标准双周容量；不足 10 个工作日的迭代会按实际工作日折算，DPO / 日常预算再按个人比例计算。</Text>
         </Form>
       </Modal>
 
