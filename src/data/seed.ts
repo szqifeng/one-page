@@ -22,7 +22,7 @@ function allocations(
   );
 }
 
-const workItems: WorkItem[] = [
+const baseWorkItems: Array<Omit<WorkItem, 'progress'>> = [
   { id: 'w1', personId: 'p1', type: 'dpo', code: 'D01', title: '权限审批上线', status: 'in_progress', allocations: allocations([['规则与方案确认', 3], ['开发验收上线', 5]]) },
   { id: 'w2', personId: 'p1', type: 'dpo', code: 'D02', title: '角色配置优化', status: 'planned', allocations: allocations([null, null, ['配置方案', 4], ['交付上线', 5]]) },
   { id: 'w3', personId: 'p1', type: 'routine', code: 'N01', title: '财务接口适配', status: 'done', allocations: allocations([['接口适配', 2]]) },
@@ -43,8 +43,24 @@ const workItems: WorkItem[] = [
   { id: 'w18', personId: 'p6', type: 'routine', code: 'N17', title: '导出样式优化', status: 'planned', allocations: allocations([null, null, null, null, ['导出调整', 1]]) },
 ];
 
+const workItems: WorkItem[] = baseWorkItems.map((item) => ({
+  ...item,
+  progress: item.status === 'done' ? 100 : item.status === 'in_progress' ? 45 : 0,
+}));
+
 export const seedPlan: PlanState = {
   quarter: '2026 Q4',
+  activeQuarterId: 'quarter-2026-q4',
+  quarters: [
+    {
+      id: 'quarter-2026-q4',
+      name: '2026 Q4',
+      year: 2026,
+      currentIterationId: 'r2',
+      iterations,
+      workItems,
+    },
+  ],
   currentIterationId: 'r2',
   currentUserId: 'p1',
   personnelTypes: [

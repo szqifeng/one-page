@@ -65,6 +65,16 @@ async function initDatabase() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS planning_plan_backups (
+      id BIGSERIAL PRIMARY KEY,
+      team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      source_version INTEGER NOT NULL,
+      state JSONB NOT NULL,
+      backup_date DATE NOT NULL,
+      backup_slot TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (team_id, backup_date, backup_slot)
+    );
     CREATE TABLE IF NOT EXISTS audit_logs (
       id BIGSERIAL PRIMARY KEY,
       team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
@@ -273,6 +283,38 @@ async function listBehaviorLogs(teamId, limit = 200) {
   return result.rows;
 }
 
+async function listPlanVersions(teamId, limit = 50) {
+  const result = await pool.query(
+    `SELECT b.id, b.source_version AS "sourceVersion", b.backup_date AS "backupDate",
+            b.backup_slot AS "backupSlot", b.created_at AS "createdAt"
+     FROM planning_plan_backups b
+     WHERE b.team_id = $1
+     ORDER BY b.created_at DESC, b.id DESC
+     LIMIT $2`,
+    [teamId, Math.min(Math.max(Number(limit) || 50, 1), 50)],
+  );
+  return result.rows;
+}
+
+async function getPlanVersion(teamId, backupId) {
+  const result = await pool.query(
+    `SELECT state, source_version AS "sourceVersion" FROM planning_plan_backups WHERE team_id = $1 AND id = $2`,
+    [teamId, backupId],
+  );
+  return result.rows[0] || null;
+}
+
+async function createScheduledBackups(backupDate, backupSlots) {
+  for (const backupSlot of backupSlots) {
+    await pool.query(
+      `INSERT INTO planning_plan_backups (team_id, source_version, state, backup_date, backup_slot)
+       SELECT team_id, version, state, $1::date, $2 FROM planning_plans
+       ON CONFLICT (team_id, backup_date, backup_slot) DO NOTHING`,
+      [backupDate, backupSlot],
+    );
+  }
+}
+
 module.exports = {
   pool,
   initDatabase,
@@ -284,4 +326,7 @@ module.exports = {
   savePlan,
   recordBehavior,
   listBehaviorLogs,
+  listPlanVersions,
+  getPlanVersion,
+  createScheduledBackups,
 };

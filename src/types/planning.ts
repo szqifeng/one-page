@@ -59,11 +59,23 @@ export interface WorkItem {
   title: string;
   type: DemandType;
   status: WorkStatus;
+  progress: number;
   allocations: Record<string, Allocation>;
+}
+
+export interface QuarterPlan {
+  id: string;
+  name: string;
+  year: number;
+  currentIterationId: string;
+  iterations: Iteration[];
+  workItems: WorkItem[];
 }
 
 export interface PlanState {
   quarter: string;
+  activeQuarterId: string;
+  quarters: QuarterPlan[];
   currentIterationId: string;
   currentUserId: string;
   personnelTypes: PersonnelType[];

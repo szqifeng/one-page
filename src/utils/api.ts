@@ -1,4 +1,5 @@
 import type { PlanState } from '@/types/planning';
+import { syncActiveQuarter } from '@/utils/quarters';
 
 export interface AuthUser {
   id: string;
@@ -23,6 +24,14 @@ export interface BehaviorLog {
   createdAt: string;
   account: string | null;
   displayName: string | null;
+}
+
+export interface PlanVersion {
+  id: string;
+  sourceVersion: number;
+  backupDate: string;
+  backupSlot: string;
+  createdAt: string;
 }
 
 interface PlanResponse {
@@ -79,10 +88,18 @@ export function getPlan() {
 export function savePlan(plan: PlanState, version: number) {
   return request<{ version: number; updatedAt: string }>('/api/plan', {
     method: 'PUT',
-    body: JSON.stringify({ plan, version }),
+    body: JSON.stringify({ plan: syncActiveQuarter(plan), version }),
   });
 }
 
 export function getBehaviorLogs(limit = 200) {
   return request<{ logs: BehaviorLog[] }>(`/api/audit/behaviors?limit=${limit}`);
+}
+
+export function getPlanVersions() {
+  return request<{ versions: PlanVersion[]; currentVersion: number }>('/api/plan/versions');
+}
+
+export function restorePlanVersion(backupId: string) {
+  return request<{ plan: PlanState; version: number; updatedAt: string }>(`/api/plan/versions/${backupId}/restore`, { method: 'POST' });
 }

@@ -2,6 +2,7 @@
   "name": "one-paper-rolling-plan",
   "version": "0.1.0",
   "private": true,
+  "license": "PolyForm-Noncommercial-1.0.0",
   "description": "团队季度双周滚动规划一页纸看板",
   "scripts": {
     "dev": "max dev",

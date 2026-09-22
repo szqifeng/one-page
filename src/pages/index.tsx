@@ -34,15 +34,17 @@ import {
   message,
 } from 'antd';
 import dayjs from 'dayjs';
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import TeamSettings from '@/components/TeamSettings';
 import { seedPlan } from '@/data/seed';
-import { ApiError, getAuthConfig, getCurrentUser, getPlan, login, logout, savePlan as savePlanApi, type AuthUser } from '@/utils/api';
+import { ApiError, getAuthConfig, getCurrentUser, getPlan, getPlanVersions, login, logout, restorePlanVersion, savePlan as savePlanApi, type AuthUser, type PlanVersion } from '@/utils/api';
 import type {
   Allocation,
   DemandType,
+  Iteration,
   Person,
   PlanState,
+  QuarterPlan,
   WorkItem,
   WorkStatus,
 } from '@/types/planning';
@@ -60,11 +62,13 @@ import {
   canEditItem,
   hasPermission,
 } from '@/utils/permissions';
+import { activateQuarter, normalizePlanQuarters, syncActiveQuarter } from '@/utils/quarters';
 import styles from './index.less';
 
 const { Text, Title } = Typography;
 
 type InsightView = 'iteration' | 'quarter' | 'person' | 'task';
+type CapacityView = DemandType | 'total';
 
 interface WorkItemFormValues {
   personId: string;
@@ -72,7 +76,15 @@ interface WorkItemFormValues {
   code: string;
   title: string;
   status: WorkStatus;
+  progress: number;
   allocations: Record<string, Partial<Allocation>>;
+}
+
+interface QuarterFormValues {
+  name: string;
+  year: number;
+  startDate: string;
+  endDate: string;
 }
 
 interface InsightItem {
@@ -166,6 +178,11 @@ export default function RollingPlanPage() {
   const [passwordEnabled, setPasswordEnabled] = useState(true);
   const [planVersion, setPlanVersion] = useState(0);
   const [planHydrated, setPlanHydrated] = useState(false);
+  const [restoreModalOpen, setRestoreModalOpen] = useState(false);
+  const [quarterModalOpen, setQuarterModalOpen] = useState(false);
+  const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
+  const skipNextPersist = useRef(false);
   const [ownerFilter, setOwnerFilter] = useState('all');
   const [personTypeFilter, setPersonTypeFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState<'all' | DemandType>('all');
@@ -176,11 +193,12 @@ export default function RollingPlanPage() {
   const [editingItem, setEditingItem] = useState<WorkItem | null>(null);
   const [workModalOpen, setWorkModalOpen] = useState(false);
   const [routineCapacityOpen, setRoutineCapacityOpen] = useState(false);
-  const [capacityDemandType, setCapacityDemandType] = useState<DemandType>('routine');
+  const [capacityDemandType, setCapacityDemandType] = useState<CapacityView>('routine');
   const [capacityPerson, setCapacityPerson] = useState<Person | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [workForm] = Form.useForm<WorkItemFormValues>();
   const [capacityForm] = Form.useForm<{ iterationCapacityDays: number }>();
+  const [quarterForm] = Form.useForm<QuarterFormValues>();
 
   useEffect(() => {
     let active = true;
@@ -197,7 +215,8 @@ export default function RollingPlanPage() {
         try {
           const remote = await getPlan();
           if (!active) return;
-          setPlan({ ...remote.plan, currentUserId: personIdForUser(remote.plan, user) });
+          const normalized = normalizePlanQuarters(remote.plan);
+          setPlan({ ...normalized, currentUserId: personIdForUser(normalized, user) });
           setPlanVersion(remote.version);
         } catch (error) {
           if (error instanceof ApiError && error.status === 404) {
@@ -222,6 +241,10 @@ export default function RollingPlanPage() {
 
   useEffect(() => {
     if (!authUser || !planHydrated) return undefined;
+    if (skipNextPersist.current) {
+      skipNextPersist.current = false;
+      return undefined;
+    }
     const timer = window.setTimeout(() => {
       savePlanApi(plan, planVersion)
         .then(({ version }) => setPlanVersion(version))
@@ -247,7 +270,7 @@ export default function RollingPlanPage() {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
       });
-      const nextPlan = remote?.plan ?? structuredClone(seedPlan);
+      const nextPlan = normalizePlanQuarters(remote?.plan ?? structuredClone(seedPlan));
       setPlan({ ...nextPlan, currentUserId: personIdForUser(nextPlan, result.user) });
       setPlanVersion(remote?.version ?? 0);
       setPlanHydrated(true);
@@ -282,7 +305,7 @@ export default function RollingPlanPage() {
       return;
     }
     setEditingItem(item);
-    workForm.setFieldsValue({ ...item, allocations: structuredClone(item.allocations) });
+    workForm.setFieldsValue({ ...item, progress: item.progress ?? 0, allocations: structuredClone(item.allocations) });
     setWorkModalOpen(true);
   }
 
@@ -334,7 +357,9 @@ export default function RollingPlanPage() {
   const capacityPeople = useMemo(
     () =>
       analysisPeople.filter((person) =>
-        capacityDemandType === 'routine' ? person.routineRatio > 0 : person.dpoRatio > 0,
+        capacityDemandType === 'total'
+          ? person.iterationCapacityDays > 0
+          : capacityDemandType === 'routine' ? person.routineRatio > 0 : person.dpoRatio > 0,
       ),
     [analysisPeople, capacityDemandType],
   );
@@ -345,11 +370,11 @@ export default function RollingPlanPage() {
         .flatMap((person) =>
           plan.iterations.map((iteration) => {
             const allocated = plan.workItems
-              .filter((item) => item.personId === person.id && item.type === capacityDemandType)
+              .filter((item) => item.personId === person.id && (capacityDemandType === 'total' || item.type === capacityDemandType))
               .reduce((sum, item) => sum + (item.allocations[iteration.id]?.days ?? 0), 0);
-            const capacity = person.iterationCapacityDays * (
-              capacityDemandType === 'routine' ? person.routineRatio : person.dpoRatio
-            );
+            const capacity = capacityDemandType === 'total'
+              ? person.iterationCapacityDays
+              : person.iterationCapacityDays * (capacityDemandType === 'routine' ? person.routineRatio : person.dpoRatio);
             return {
               key: `${person.id}-${iteration.id}`,
               personId: person.id,
@@ -473,6 +498,10 @@ export default function RollingPlanPage() {
           hint: `容量 ${formatDays(totalCapacity)} 天`,
           ratio: totalCapacity ? totalDays / totalCapacity : 0,
           danger: totalDays > totalCapacity,
+          onClick: () => {
+            setCapacityDemandType('total');
+            setRoutineCapacityOpen(true);
+          },
         },
         {
           key: 'quarter-left',
@@ -556,6 +585,7 @@ export default function RollingPlanPage() {
       type,
       code: nextCode(type),
       status: 'planned',
+      progress: 0,
       allocations: {},
     });
     setWorkModalOpen(true);
@@ -593,6 +623,7 @@ export default function RollingPlanPage() {
       code: values.code.trim().toUpperCase(),
       title: values.title.trim(),
       status: values.status,
+      progress: values.progress,
       allocations,
     };
 
@@ -644,15 +675,145 @@ export default function RollingPlanPage() {
     message.success('参考容量已更新');
   };
 
-  const resetDemo = () => {
-    setPlan({ ...structuredClone(seedPlan), currentUserId: personIdForUser(seedPlan, authUser) });
+  const openRestoreHistory = async () => {
+    setRestoreModalOpen(true);
+    setVersionsLoading(true);
+    try {
+      const result = await getPlanVersions();
+      setPlanVersions(result.versions);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '版本列表加载失败');
+    } finally {
+      setVersionsLoading(false);
+    }
+  };
+
+  const restoreVersion = async (backup: PlanVersion) => {
+    try {
+      const result = await restorePlanVersion(backup.id);
+      skipNextPersist.current = true;
+      const normalized = normalizePlanQuarters(result.plan);
+      setPlan({ ...normalized, currentUserId: personIdForUser(normalized, authUser) });
+      setPlanVersion(result.version);
+      setRestoreModalOpen(false);
+      message.success(`已恢复 ${backup.backupDate} ${backup.backupSlot} 的备份，当前数据版本为 v${result.version}`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '版本恢复失败');
+    }
+  };
+
+  const switchQuarter = (quarterId: string) => {
+    setPlan((current) => activateQuarter(current, quarterId));
     setOwnerFilter('all');
     setPersonTypeFilter('all');
     setTypeFilter('all');
     setStatusFilter('all');
     setQuery('');
     setCollapsedPeople(new Set());
-    message.success('已恢复六人示例数据');
+  };
+
+  const openQuarterCreator = () => {
+    const currentYear = Number(plan.quarter.match(/\d{4}/)?.[0]) || dayjs().year();
+    const quarterCountByYear = plan.quarters.reduce<Map<number, number>>((counts, quarter) => {
+      counts.set(quarter.year, (counts.get(quarter.year) ?? 0) + 1);
+      return counts;
+    }, new Map());
+    let targetYear = currentYear;
+    while ((quarterCountByYear.get(targetYear) ?? 0) >= 3) targetYear += 1;
+    const sequence = (quarterCountByYear.get(targetYear) ?? 0) + 1;
+    const existingRanges = plan.quarters
+      .filter((quarter) => quarter.year === targetYear)
+      .map((quarter) => ({
+        start: quarter.iterations[0]?.startDate,
+        end: quarter.iterations.at(-1)?.endDate,
+      }));
+    const candidatePeriods: Array<[string, string]> = [
+      [`${targetYear}-01-01`, `${targetYear}-04-30`],
+      [`${targetYear}-05-01`, `${targetYear}-08-31`],
+      [`${targetYear}-09-01`, `${targetYear}-12-31`],
+    ];
+    const [startDate, endDate] = candidatePeriods.find(([candidateStart, candidateEnd]) =>
+      existingRanges.every((range) => !range.start || !range.end || candidateEnd < range.start || candidateStart > range.end),
+    ) ?? candidatePeriods[0]!;
+    quarterForm.setFieldsValue({
+      name: `${targetYear} 第${sequence}季度`,
+      year: targetYear,
+      startDate,
+      endDate,
+    });
+    setQuarterModalOpen(true);
+  };
+
+  const createQuarter = async () => {
+    const values = await quarterForm.validateFields();
+    const start = dayjs(values.startDate);
+    const end = dayjs(values.endDate);
+    if (!start.isValid() || !end.isValid() || end.isBefore(start)) {
+      message.error('季度结束日期不能早于开始日期');
+      return;
+    }
+    if (start.year() !== values.year || end.year() !== values.year) {
+      message.error('季度开始与结束日期必须在所选年份内');
+      return;
+    }
+    if (plan.quarters.filter((quarter) => quarter.year === values.year).length >= 3) {
+      message.error(`${values.year} 年最多创建 3 个季度`);
+      return;
+    }
+    const overlaps = plan.quarters
+      .filter((quarter) => quarter.year === values.year)
+      .some((quarter) => {
+        const quarterStart = quarter.iterations[0]?.startDate;
+        const quarterEnd = quarter.iterations.at(-1)?.endDate;
+        return quarterStart && quarterEnd && values.startDate <= quarterEnd && values.endDate >= quarterStart;
+      });
+    if (overlaps) {
+      message.error('季度日期范围不能与同年份已有季度重叠');
+      return;
+    }
+    if (plan.quarters.some((quarter) => quarter.name.trim().toLowerCase() === values.name.trim().toLowerCase())) {
+      message.error('季度名称已存在');
+      return;
+    }
+    const quarterId = `quarter-${values.year}-${Date.now()}`;
+    const iterations: Iteration[] = [];
+    let cursor = start;
+    let index = 1;
+    while (!cursor.isAfter(end)) {
+      const proposedEnd = cursor.add(13, 'day');
+      const iterationEnd = proposedEnd.isAfter(end) ? end : proposedEnd;
+      iterations.push({
+        id: `${quarterId}-r${index}`,
+        label: `R${index}`,
+        startDate: cursor.format('YYYY-MM-DD'),
+        endDate: iterationEnd.format('YYYY-MM-DD'),
+      });
+      cursor = iterationEnd.add(1, 'day');
+      index += 1;
+    }
+    const quarter: QuarterPlan = {
+      id: quarterId,
+      name: values.name.trim(),
+      year: values.year,
+      currentIterationId: iterations[0]!.id,
+      iterations,
+      workItems: [],
+    };
+    setPlan((current) => {
+      const synchronized = syncActiveQuarter(current);
+      return activateQuarter({
+        ...synchronized,
+        quarters: [...synchronized.quarters, quarter],
+      }, quarter.id);
+    });
+    setQuarterModalOpen(false);
+    setOwnerFilter('all');
+    setPersonTypeFilter('all');
+    setTypeFilter('all');
+    setStatusFilter('all');
+    setQuery('');
+    setCollapsedPeople(new Set());
+    message.success(`已创建 ${quarter.name}，并生成 ${iterations.length} 个双周迭代`);
   };
 
   const toggleCollapsed = (personId: string) => {
@@ -688,6 +849,19 @@ export default function RollingPlanPage() {
           </Text>
         </div>
         <Space wrap className={styles.headerActions}>
+          <Select
+            className={styles.quarterSelect}
+            value={plan.activeQuarterId}
+            onChange={switchQuarter}
+            disabled={!canEditAll}
+            options={plan.quarters
+              .slice()
+              .sort((left, right) => left.year - right.year || left.name.localeCompare(right.name))
+              .map((quarter) => ({ label: quarter.name, value: quarter.id }))}
+          />
+          {canEditAll && (
+            <Button onClick={openQuarterCreator}>新建季度</Button>
+          )}
           <div className={styles.identitySwitcher}>
             <span className={styles.teamLabel}>{authUser.teamName}</span>
             <span className={styles.identityDivider} />
@@ -702,15 +876,7 @@ export default function RollingPlanPage() {
             </Button>
           )}
           {canEditAll && (
-            <Popconfirm
-              title="恢复六人示例数据？"
-              description="当前本地修改将被清除。"
-              onConfirm={resetDemo}
-              okText="恢复"
-              cancelText="取消"
-            >
-              <Button icon={<ReloadOutlined />}>恢复示例</Button>
-            </Popconfirm>
+            <Button icon={<ReloadOutlined />} onClick={openRestoreHistory}>恢复版本</Button>
           )}
           {canCreateItem && (
             <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreateItem()}>
@@ -902,7 +1068,7 @@ export default function RollingPlanPage() {
             <table className={styles.board}>
               <colgroup>
                 <col style={{ width: 126 }} />
-                <col style={{ width: 88 }} />
+                <col style={{ width: 118 }} />
                 <col style={{ width: 70 }} />
                 <col style={{ width: 150 }} />
                 <col style={{ width: 88 }} />
@@ -921,7 +1087,7 @@ export default function RollingPlanPage() {
                   <th rowSpan={2} className={`${styles.typeColumn} ${styles.fixedB}`}>类型</th>
                   <th rowSpan={2} className={`${styles.codeColumn} ${styles.fixedC}`}>编号</th>
                   <th rowSpan={2} className={`${styles.taskColumn} ${styles.fixedD}`}>具体事项</th>
-                  <th rowSpan={2} className={`${styles.statusColumn} ${styles.fixedE}`}>状态</th>
+                  <th rowSpan={2} className={`${styles.statusColumn} ${styles.fixedE}`}>状态 / 进度</th>
                   {plan.iterations.map((iteration) => (
                     <th
                       key={iteration.id}
@@ -1032,6 +1198,7 @@ export default function RollingPlanPage() {
                                 </td>
                                 <td className={`${styles.fixedE} ${styles.statusCell}`}>
                                   <Tag color={statusMeta[item.status].color}>{statusMeta[item.status].label}</Tag>
+                                  <Progress percent={item.progress ?? 0} size="small" />
                                 </td>
                                 {plan.iterations.map((iteration) => {
                                   const allocation = item.allocations[iteration.id];
@@ -1099,6 +1266,85 @@ export default function RollingPlanPage() {
       </div>
 
       <Modal
+        title="新建季度"
+        open={quarterModalOpen}
+        onOk={createQuarter}
+        onCancel={() => setQuarterModalOpen(false)}
+        okText="创建季度"
+        cancelText="取消"
+        destroyOnHidden
+      >
+        <Text type="secondary">每年最多创建 3 个季度。系统会根据日期范围自动生成连续的双周迭代。</Text>
+        <Form form={quarterForm} layout="vertical" preserve={false} style={{ marginTop: 16 }}>
+          <Row gutter={14}>
+            <Col span={16}>
+              <Form.Item label="季度名称" name="name" rules={[{ required: true, message: '请输入季度名称' }, { max: 30 }]}>
+                <Input placeholder="例如：2027 第1季度" />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item label="年份" name="year" rules={[{ required: true, message: '请输入年份' }]}>
+                <InputNumber min={2000} max={2100} precision={0} style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={14}>
+            <Col span={12}>
+              <Form.Item label="开始日期" name="startDate" rules={[{ required: true, message: '请选择开始日期' }]}>
+                <Input type="date" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label="结束日期" name="endDate" rules={[{ required: true, message: '请选择结束日期' }]}>
+                <Input type="date" />
+              </Form.Item>
+            </Col>
+          </Row>
+        </Form>
+      </Modal>
+
+      <Modal
+        width={760}
+        title="恢复规划版本"
+        open={restoreModalOpen}
+        onCancel={() => setRestoreModalOpen(false)}
+        footer={null}
+        destroyOnHidden
+      >
+        <Text type="secondary">每天定时生成 3 份备份，此处展示最近 50 份。恢复不会删除已有备份。</Text>
+        <Table<PlanVersion>
+          rowKey="id"
+          size="small"
+          loading={versionsLoading}
+          pagination={false}
+          style={{ marginTop: 14 }}
+          dataSource={planVersions}
+          locale={{ emptyText: '暂无可恢复版本' }}
+          columns={[
+            { title: '备份日期', dataIndex: 'backupDate', width: 130, render: (value: string) => dayjs(value).format('YYYY-MM-DD') },
+            { title: '备份时点', dataIndex: 'backupSlot', width: 100 },
+            { title: '数据版本', dataIndex: 'sourceVersion', width: 100, render: (value: number) => `v${value}` },
+            { title: '实际生成时间', dataIndex: 'createdAt', width: 190, render: (value: string) => dayjs(value).format('YYYY-MM-DD HH:mm:ss') },
+            {
+              title: '操作',
+              width: 100,
+              render: (_: unknown, record: PlanVersion) => (
+                <Popconfirm
+                  title={`恢复 ${record.backupDate} ${record.backupSlot} 的备份？`}
+                  description="恢复后会生成新的版本记录。"
+                  okText="恢复"
+                  cancelText="取消"
+                  onConfirm={() => restoreVersion(record)}
+                >
+                  <Button type="link" size="small">恢复</Button>
+                </Popconfirm>
+              ),
+            },
+          ]}
+        />
+      </Modal>
+
+      <Modal
         width={760}
         title={editingItem ? '编辑具体事项' : '新增具体事项'}
         open={workModalOpen}
@@ -1160,7 +1406,7 @@ export default function RollingPlanPage() {
                 <Input />
               </Form.Item>
             </Col>
-            <Col span={16}>
+            <Col span={10}>
               <Form.Item
                 label="具体事项"
                 name="title"
@@ -1170,6 +1416,11 @@ export default function RollingPlanPage() {
                 ]}
               >
                 <Input />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item label="完成进度" name="progress" rules={[{ required: true, message: '请输入完成进度' }]}>
+                <InputNumber min={0} max={100} precision={0} addonAfter="%" style={{ width: '100%' }} />
               </Form.Item>
             </Col>
           </Row>
@@ -1198,14 +1449,14 @@ export default function RollingPlanPage() {
 
       <Modal
         width={980}
-        title={`${typeMeta[capacityDemandType].shortLabel}容量速查`}
+        title={`${capacityDemandType === 'total' ? '总投入' : typeMeta[capacityDemandType].shortLabel}容量速查`}
         open={routineCapacityOpen}
         onCancel={() => setRoutineCapacityOpen(false)}
         footer={null}
         destroyOnHidden
       >
         <Text type="secondary">
-          按当前负责人和人员类型筛选范围，展示每个人每个迭代的{typeMeta[capacityDemandType].shortLabel}参考容量、已排投入与可用人天；点击单元格可定位到对应迭代。
+          按当前负责人和人员类型筛选范围，展示每个人每个迭代的{capacityDemandType === 'total' ? '总' : typeMeta[capacityDemandType].shortLabel}容量、已排投入与可用人天；点击单元格可定位到对应迭代。
         </Text>
         <Table<RoutineCapacityMatrixRow>
           rowKey="key"
@@ -1214,7 +1465,7 @@ export default function RollingPlanPage() {
           scroll={{ x: 320 + plan.iterations.length * 150, y: 460 }}
           style={{ marginTop: 14 }}
           dataSource={routineCapacityMatrix}
-          locale={{ emptyText: `当前筛选范围没有配置${typeMeta[capacityDemandType].shortLabel}投入比例的人员` }}
+          locale={{ emptyText: `当前筛选范围没有配置${capacityDemandType === 'total' ? '可投入容量' : `${typeMeta[capacityDemandType].shortLabel}投入比例`}的人员` }}
           onRow={(record) => ({
             onClick: () => {
               setOwnerFilter(record.personId);

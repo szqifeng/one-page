@@ -11,6 +11,9 @@ const {
   savePlan,
   recordBehavior,
   listBehaviorLogs,
+  listPlanVersions,
+  getPlanVersion,
+  createScheduledBackups,
 } = require('./db');
 
 const app = express();
@@ -19,6 +22,33 @@ const secureCookie = process.env.NODE_ENV === 'production';
 const authMode = (process.env.AUTH_MODE || (process.env.OAUTH2_ENABLED === 'true' ? 'both' : 'local')).toLowerCase();
 const passwordEnabled = authMode === 'local' || authMode === 'both';
 const oauthEnabled = authMode === 'oauth2' || authMode === 'both';
+const backupTimezone = process.env.BACKUP_TIMEZONE || 'Asia/Shanghai';
+const defaultBackupTimes = ['02:00', '10:00', '18:00'];
+const configuredBackupTimes = [...new Set((process.env.BACKUP_TIMES || defaultBackupTimes.join(','))
+  .split(',')
+  .map((value) => value.trim())
+  .filter((value) => /^([01]\d|2[0-3]):[0-5]\d$/.test(value)))];
+const backupTimes = (configuredBackupTimes.length === 3 ? configuredBackupTimes : defaultBackupTimes).sort();
+
+function zonedClock() {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: backupTimezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date()).map((part) => [part.type, part.value]),
+  );
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, time: `${parts.hour}:${parts.minute}` };
+}
+
+async function runScheduledBackups() {
+  const now = zonedClock();
+  await createScheduledBackups(now.date, backupTimes.filter((time) => time <= now.time));
+}
 
 function oauthSettings() {
   return {
@@ -65,6 +95,34 @@ function permissionKeys(plan, user) {
   );
 }
 
+function normalizeStoredPlan(state) {
+  const normalizeItems = (items = []) => items.map((item) => ({
+    ...item,
+    progress: Number.isFinite(item.progress) ? Math.min(100, Math.max(0, item.progress)) : 0,
+  }));
+  const year = Number(state.quarter?.match(/\d{4}/)?.[0]) || new Date().getFullYear();
+  const legacyQuarter = {
+    id: `quarter-${year}-legacy`,
+    name: state.quarter || `${year} 第1季度`,
+    year,
+    currentIterationId: state.currentIterationId,
+    iterations: state.iterations || [],
+    workItems: normalizeItems(state.workItems),
+  };
+  const quarters = (Array.isArray(state.quarters) && state.quarters.length ? state.quarters : [legacyQuarter])
+    .map((quarter) => ({ ...quarter, workItems: normalizeItems(quarter.workItems) }));
+  const active = quarters.find((quarter) => quarter.id === state.activeQuarterId) || quarters[0];
+  return {
+    ...state,
+    activeQuarterId: active.id,
+    quarter: active.name,
+    currentIterationId: active.currentIterationId,
+    iterations: active.iterations,
+    workItems: active.workItems,
+    quarters,
+  };
+}
+
 function canEditPlan(plan, user, nextState) {
   const permissions = permissionKeys(plan, user);
   if (permissions.has('plan.edit_all')) return true;
@@ -75,8 +133,20 @@ function canEditPlan(plan, user, nextState) {
   if (JSON.stringify(plan.personnelTypes) !== JSON.stringify(nextState.personnelTypes)) return false;
   if (JSON.stringify(plan.permissionRoles) !== JSON.stringify(nextState.permissionRoles)) return false;
   if (plan.currentIterationId !== nextState.currentIterationId) return false;
-  if (plan.currentUserId !== nextState.currentUserId) return false;
   if (plan.quarter !== nextState.quarter) return false;
+  if (plan.activeQuarterId !== nextState.activeQuarterId) return false;
+  const oldQuarters = plan.quarters || [];
+  const newQuarters = nextState.quarters || [];
+  if (oldQuarters.length !== newQuarters.length) return false;
+  const oldQuarterMap = new Map(oldQuarters.map((quarter) => [quarter.id, quarter]));
+  for (const nextQuarter of newQuarters) {
+    const oldQuarter = oldQuarterMap.get(nextQuarter.id);
+    if (!oldQuarter) return false;
+    const { workItems: oldQuarterItems = [], ...oldQuarterMetadata } = oldQuarter;
+    const { workItems: newQuarterItems = [], ...newQuarterMetadata } = nextQuarter;
+    if (JSON.stringify(oldQuarterMetadata) !== JSON.stringify(newQuarterMetadata)) return false;
+    if (nextQuarter.id !== plan.activeQuarterId && JSON.stringify(oldQuarterItems) !== JSON.stringify(newQuarterItems)) return false;
+  }
   const oldItems = new Map((plan.workItems || []).map((item) => [item.id, item]));
   const newItems = new Map((nextState.workItems || []).map((item) => [item.id, item]));
   const effectivePersonId = (plan.people || []).find((person) => person.id === user.personId || person.account?.toLowerCase() === user.account?.toLowerCase())?.id || user.personId;
@@ -89,6 +159,40 @@ function canEditPlan(plan, user, nextState) {
     }
   }
   return true;
+}
+
+function validQuarterConfiguration(plan) {
+  if (!Array.isArray(plan.quarters) || plan.quarters.length === 0) return false;
+  const ids = new Set();
+  const names = new Set();
+  const yearCounts = new Map();
+  const yearRanges = new Map();
+  for (const quarter of plan.quarters) {
+    if (!quarter?.id || !quarter?.name || !Number.isInteger(quarter.year)) return false;
+    if (!Array.isArray(quarter.iterations) || quarter.iterations.length === 0 || !Array.isArray(quarter.workItems)) return false;
+    const normalizedName = quarter.name.trim().toLowerCase();
+    if (ids.has(quarter.id) || names.has(normalizedName)) return false;
+    ids.add(quarter.id);
+    names.add(normalizedName);
+    yearCounts.set(quarter.year, (yearCounts.get(quarter.year) || 0) + 1);
+    if (yearCounts.get(quarter.year) > 3) return false;
+    if (!quarter.iterations.some((iteration) => iteration.id === quarter.currentIterationId)) return false;
+    if (quarter.workItems.some((item) => !Number.isFinite(item.progress) || item.progress < 0 || item.progress > 100)) return false;
+    const sortedIterations = quarter.iterations.slice().sort((left, right) => left.startDate.localeCompare(right.startDate));
+    const startDate = sortedIterations[0]?.startDate;
+    const endDate = sortedIterations.at(-1)?.endDate;
+    if (!startDate || !endDate || Number(startDate.slice(0, 4)) !== quarter.year || Number(endDate.slice(0, 4)) !== quarter.year) return false;
+    const ranges = yearRanges.get(quarter.year) || [];
+    if (ranges.some((range) => startDate <= range.endDate && endDate >= range.startDate)) return false;
+    ranges.push({ startDate, endDate });
+    yearRanges.set(quarter.year, ranges);
+  }
+  const active = plan.quarters.find((quarter) => quarter.id === plan.activeQuarterId);
+  return Boolean(active
+    && active.name === plan.quarter
+    && active.currentIterationId === plan.currentIterationId
+    && JSON.stringify(active.iterations) === JSON.stringify(plan.iterations)
+    && JSON.stringify(active.workItems) === JSON.stringify(plan.workItems));
 }
 
 async function auth(req, res, next) {
@@ -208,7 +312,7 @@ app.get('/api/plan', auth, async (req, res, next) => {
   try {
     const record = await getPlan(req.user.teamId);
     if (!record) return res.status(404).json({ message: '团队规划尚未初始化' });
-    res.json({ plan: record.state, version: record.version, updatedAt: record.updated_at });
+    res.json({ plan: normalizeStoredPlan(record.state), version: record.version, updatedAt: record.updated_at });
   } catch (error) {
     next(error);
   }
@@ -226,17 +330,49 @@ app.get('/api/audit/behaviors', auth, async (req, res, next) => {
   }
 });
 
+app.get('/api/plan/versions', auth, async (req, res, next) => {
+  try {
+    const current = await getPlan(req.user.teamId);
+    if (!current || !permissionKeys(current.state, req.user).has('plan.edit_all')) {
+      return res.status(403).json({ message: '没有查看规划版本的权限' });
+    }
+    return res.json({ versions: await listPlanVersions(req.user.teamId, 50), currentVersion: current.version });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/api/plan/versions/:backupId/restore', auth, async (req, res, next) => {
+  try {
+    const current = await getPlan(req.user.teamId);
+    if (!current || !permissionKeys(current.state, req.user).has('plan.edit_all')) {
+      return res.status(403).json({ message: '没有恢复规划版本的权限' });
+    }
+    const source = await getPlanVersion(req.user.teamId, Number(req.params.backupId));
+    if (!source) return res.status(404).json({ message: '规划备份不存在' });
+    const restoredPlan = { ...normalizeStoredPlan(source.state), currentUserId: req.user.personId };
+    const saved = await savePlan(req.user.teamId, req.user.id, restoredPlan, current.version);
+    return res.json({ plan: restoredPlan, version: saved.version, updatedAt: saved.updated_at });
+  } catch (error) {
+    if (error.code === 'PLAN_VERSION_CONFLICT') return res.status(409).json({ message: '规划已被其他人修改，请刷新后重试' });
+    return next(error);
+  }
+});
+
 app.put('/api/plan', auth, async (req, res, next) => {
   try {
     const { plan, version = 0 } = req.body || {};
     if (!plan || !Array.isArray(plan.people) || !Array.isArray(plan.workItems)) {
       return res.status(400).json({ message: '规划数据格式不正确' });
     }
+    if (!validQuarterConfiguration(plan)) {
+      return res.status(400).json({ message: '季度或事项进度配置无效；每年最多 3 个季度，进度必须为 0–100%' });
+    }
     const current = await getPlan(req.user.teamId);
     if (!current && !permissionKeys(plan, req.user).has('plan.edit_all')) {
       return res.status(403).json({ message: '当前账号没有初始化团队规划的权限' });
     }
-    if (current && !canEditPlan(current.state, req.user, plan)) {
+    if (current && !canEditPlan(normalizeStoredPlan(current.state), req.user, plan)) {
       return res.status(403).json({ message: '当前账号没有保存这些规划变更的权限' });
     }
     const saved = await savePlan(req.user.teamId, req.user.id, plan, Number(version));
@@ -255,7 +391,11 @@ app.use((error, _req, res, _next) => {
 });
 
 initDatabase()
-  .then(() => app.listen(port, () => console.log(`rolling-plan-api listening on :${port}`)))
+  .then(async () => {
+    await runScheduledBackups();
+    setInterval(() => runScheduledBackups().catch((error) => console.error('scheduled backup failed', error)), 60 * 1000);
+    app.listen(port, () => console.log(`rolling-plan-api listening on :${port}; backups ${backupTimes.join(',')} ${backupTimezone}`));
+  })
   .catch((error) => {
     console.error('database initialization failed', error);
     process.exit(1);
