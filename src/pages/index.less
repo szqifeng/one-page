@@ -99,13 +99,25 @@ body {
   color: #c7d6e1;
   font-size: 12px;
 
-  .teamLabel {
-    padding: 4px 9px;
+  .teamSelect {
+    width: 190px;
+
+    :global(.ant-select-selector) {
+      border-color: rgb(143 215 190 / 38%) !important;
+      background: rgb(79 164 137 / 18%) !important;
+    }
+
+    :global(.ant-select-selection-item),
+    :global(.ant-select-arrow) {
+      color: #d8f4e9;
+      font-weight: 650;
+    }
+  }
+
+  .createTeamButton {
     color: #d8f4e9;
-    border: 1px solid rgb(143 215 190 / 38%);
-    border-radius: 999px;
-    background: rgb(79 164 137 / 18%);
-    font-weight: 650;
+    border-color: rgb(143 215 190 / 38%);
+    background: rgb(79 164 137 / 12%);
   }
 
   .identityDivider {

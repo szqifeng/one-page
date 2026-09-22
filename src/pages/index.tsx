@@ -9,6 +9,7 @@ import {
   RightOutlined,
   SearchOutlined,
   SettingOutlined,
+  TeamOutlined,
   WarningFilled,
 } from '@ant-design/icons';
 import { ProCard } from '@ant-design/pro-components';
@@ -37,7 +38,7 @@ import dayjs from 'dayjs';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import TeamSettings from '@/components/TeamSettings';
 import { seedPlan } from '@/data/seed';
-import { ApiError, getAuthConfig, getCurrentUser, getPlan, getPlanVersions, login, logout, restorePlanVersion, savePlan as savePlanApi, type AuthUser, type PlanVersion } from '@/utils/api';
+import { ApiError, createTeam, getAuthConfig, getCurrentUser, getPlan, getPlanVersions, getTeams, login, logout, restorePlanVersion, savePlan as savePlanApi, switchTeam, type AuthUser, type PlanVersion, type TeamSummary } from '@/utils/api';
 import type {
   Allocation,
   DemandType,
@@ -86,6 +87,11 @@ interface QuarterFormValues {
   year: number;
   startDate: string;
   endDate: string;
+}
+
+interface TeamFormValues {
+  name: string;
+  code: string;
 }
 
 interface InsightItem {
@@ -170,6 +176,22 @@ function personIdForUser(plan: PlanState, user: AuthUser) {
   return plan.people.find((person) => person.id === user.personId || person.account.toLowerCase() === user.account.toLowerCase())?.id ?? user.personId;
 }
 
+function blankPlanForTeam(user: AuthUser): PlanState {
+  const next = structuredClone(seedPlan);
+  const creator = next.people[0]!;
+  next.people = [{
+    ...creator,
+    id: user.personId,
+    name: user.displayName,
+    account: user.account,
+    permissionRoleIds: ['role-admin'],
+  }];
+  next.quarters = next.quarters.map((quarter) => ({ ...quarter, workItems: [] }));
+  next.workItems = [];
+  next.currentUserId = user.personId;
+  return next;
+}
+
 export default function RollingPlanPage() {
   const [plan, setPlan] = useState<PlanState>(() => structuredClone(seedPlan));
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
@@ -179,6 +201,9 @@ export default function RollingPlanPage() {
   const [passwordEnabled, setPasswordEnabled] = useState(true);
   const [planVersion, setPlanVersion] = useState(0);
   const [planHydrated, setPlanHydrated] = useState(false);
+  const [teams, setTeams] = useState<TeamSummary[]>([]);
+  const [teamModalOpen, setTeamModalOpen] = useState(false);
+  const [teamChanging, setTeamChanging] = useState(false);
   const [restoreModalOpen, setRestoreModalOpen] = useState(false);
   const [quarterModalOpen, setQuarterModalOpen] = useState(false);
   const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
@@ -200,6 +225,7 @@ export default function RollingPlanPage() {
   const [workForm] = Form.useForm<WorkItemFormValues>();
   const [capacityForm] = Form.useForm<{ iterationCapacityDays: number }>();
   const [quarterForm] = Form.useForm<QuarterFormValues>();
+  const [teamForm] = Form.useForm<TeamFormValues>();
 
   useEffect(() => {
     let active = true;
@@ -214,13 +240,17 @@ export default function RollingPlanPage() {
         if (!active) return;
         setAuthUser(user);
         try {
-          const remote = await getPlan();
+          const [remote, teamResult] = await Promise.all([getPlan(), getTeams()]);
           if (!active) return;
+          setTeams(teamResult.teams);
           const normalized = normalizePlanQuarters(remote.plan);
           setPlan({ ...normalized, currentUserId: personIdForUser(normalized, user) });
           setPlanVersion(remote.version);
         } catch (error) {
           if (error instanceof ApiError && error.status === 404) {
+            const teamResult = await getTeams();
+            if (!active) return;
+            setTeams(teamResult.teams);
             setPlan({ ...structuredClone(seedPlan), currentUserId: personIdForUser(seedPlan, user) });
             setPlanVersion(0);
           } else {
@@ -267,10 +297,14 @@ export default function RollingPlanPage() {
       setAuthError('');
       const result = await login(account, password);
       setAuthUser(result.user);
-      const remote = await getPlan().catch((error) => {
-        if (error instanceof ApiError && error.status === 404) return null;
-        throw error;
-      });
+      const [remote, teamResult] = await Promise.all([
+        getPlan().catch((error) => {
+          if (error instanceof ApiError && error.status === 404) return null;
+          throw error;
+        }),
+        getTeams(),
+      ]);
+      setTeams(teamResult.teams);
       const nextPlan = normalizePlanQuarters(remote?.plan ?? structuredClone(seedPlan));
       setPlan({ ...nextPlan, currentUserId: personIdForUser(nextPlan, result.user) });
       setPlanVersion(remote?.version ?? 0);
@@ -285,6 +319,69 @@ export default function RollingPlanPage() {
     setAuthUser(null);
     setPlanHydrated(false);
     setPlanVersion(0);
+    setTeams([]);
+  };
+
+  const resetWorkspaceView = () => {
+    setOwnerFilter('all');
+    setPersonTypeFilter('all');
+    setTypeFilter('all');
+    setStatusFilter('all');
+    setQuery('');
+    setCollapsedPeople(new Set());
+    setSettingsOpen(false);
+    setRestoreModalOpen(false);
+  };
+
+  const loadTeamWorkspace = async (user: AuthUser, blankWhenMissing = false) => {
+    const remote = await getPlan().catch((error) => {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    });
+    const fallback = blankWhenMissing ? blankPlanForTeam(user) : structuredClone(seedPlan);
+    const nextPlan = normalizePlanQuarters(remote?.plan ?? fallback);
+    setPlan({ ...nextPlan, currentUserId: personIdForUser(nextPlan, user) });
+    setPlanVersion(remote?.version ?? 0);
+    resetWorkspaceView();
+  };
+
+  const handleTeamChange = async (teamId: string) => {
+    if (!authUser || teamId === authUser.teamId) return;
+    setTeamChanging(true);
+    setPlanHydrated(false);
+    try {
+      const { user } = await switchTeam(teamId);
+      setAuthUser(user);
+      await loadTeamWorkspace(user, true);
+      setPlanHydrated(true);
+      message.success(`已切换到 ${user.teamName}`);
+    } catch (error) {
+      setPlanHydrated(true);
+      message.error(error instanceof Error ? error.message : '团队切换失败');
+    } finally {
+      setTeamChanging(false);
+    }
+  };
+
+  const submitTeam = async () => {
+    const values = await teamForm.validateFields();
+    setTeamChanging(true);
+    setPlanHydrated(false);
+    try {
+      const result = await createTeam(values.name.trim(), values.code.trim().toUpperCase());
+      setTeams(result.teams);
+      setAuthUser(result.user);
+      await loadTeamWorkspace(result.user, true);
+      setPlanHydrated(true);
+      setTeamModalOpen(false);
+      teamForm.resetFields();
+      message.success(`团队「${result.team.name}」创建成功`);
+    } catch (error) {
+      setPlanHydrated(true);
+      message.error(error instanceof Error ? error.message : '团队创建失败');
+    } finally {
+      setTeamChanging(false);
+    }
   };
 
   const activeIteration = plan.iterations.find(
@@ -863,7 +960,22 @@ export default function RollingPlanPage() {
             <Button onClick={openQuarterCreator}>新建季度</Button>
           )}
           <div className={styles.identitySwitcher}>
-            <span className={styles.teamLabel}>{authUser.teamName}</span>
+            <Select
+              aria-label="当前团队"
+              className={styles.teamSelect}
+              value={authUser.teamId}
+              loading={teamChanging}
+              onChange={handleTeamChange}
+              options={teams.map((team) => ({ label: `${team.name} · ${team.code}`, value: team.id }))}
+            />
+            <Button
+              className={styles.createTeamButton}
+              icon={<TeamOutlined />}
+              onClick={() => setTeamModalOpen(true)}
+              disabled={teamChanging}
+            >
+              新建团队
+            </Button>
             <span className={styles.identityDivider} />
             <span className={styles.userIdentity}>
               <small>当前用户</small>
@@ -1270,6 +1382,39 @@ export default function RollingPlanPage() {
           点击事项或迭代格可编辑。每项一行；日常事项可从任意轮开始并跨轮交付。人天按同一行的各轮投入汇总；DPO / 日常参考容量按每个人配置的比例计算。
         </p>
       </div>
+
+      <Modal
+        title="新建团队"
+        open={teamModalOpen}
+        onOk={submitTeam}
+        onCancel={() => setTeamModalOpen(false)}
+        okText="创建并进入"
+        cancelText="取消"
+        confirmLoading={teamChanging}
+        destroyOnHidden
+      >
+        <Text type="secondary">创建后你将成为该团队的系统管理员，并自动切换到新团队。</Text>
+        <Form form={teamForm} layout="vertical" preserve={false} style={{ marginTop: 16 }}>
+          <Form.Item
+            label="团队名称"
+            name="name"
+            rules={[{ required: true, message: '请输入团队名称' }, { min: 2, max: 50, message: '请输入 2–50 个字符' }]}
+          >
+            <Input placeholder="例如：增长产品团队" maxLength={50} />
+          </Form.Item>
+          <Form.Item
+            label="团队编码"
+            name="code"
+            normalize={(value) => String(value || '').toUpperCase()}
+            rules={[
+              { required: true, message: '请输入团队编码' },
+              { pattern: /^[A-Z0-9][A-Z0-9-]{1,19}$/, message: '请输入 2–20 位大写字母、数字或连字符' },
+            ]}
+          >
+            <Input placeholder="例如：GROWTH-PRODUCT" maxLength={20} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         title="新建季度"

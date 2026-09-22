@@ -7,6 +7,9 @@ const {
   loginWithOAuthProfile,
   findSession,
   logout,
+  listTeams,
+  createTeam,
+  switchSessionTeam,
   getPlan,
   savePlan,
   recordBehavior,
@@ -267,6 +270,40 @@ app.post('/api/auth/login', async (req, res, next) => {
 });
 
 app.get('/api/auth/me', auth, (req, res) => res.json({ user: req.user }));
+
+app.get('/api/teams', auth, async (req, res, next) => {
+  try {
+    res.json({ teams: await listTeams(req.user.id), activeTeamId: req.user.teamId });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/teams', auth, async (req, res, next) => {
+  try {
+    const name = String(req.body?.name || '').trim();
+    const code = String(req.body?.code || '').trim().toUpperCase();
+    if (name.length < 2 || name.length > 50) return res.status(400).json({ message: '团队名称须为 2–50 个字符' });
+    if (!/^[A-Z0-9][A-Z0-9-]{1,19}$/.test(code)) return res.status(400).json({ message: '团队编码须为 2–20 位大写字母、数字或连字符' });
+    const team = await createTeam(req.user, name, code);
+    await switchSessionTeam(req.cookies.session, req.user.id, team.id);
+    const user = await findSession(req.cookies.session);
+    return res.status(201).json({ team, user, teams: await listTeams(req.user.id) });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ message: '团队编码已存在，请更换后重试' });
+    return next(error);
+  }
+});
+
+app.post('/api/teams/:teamId/switch', auth, async (req, res, next) => {
+  try {
+    const switched = await switchSessionTeam(req.cookies.session, req.user.id, req.params.teamId);
+    if (!switched) return res.status(403).json({ message: '你不是该团队成员，无法切换' });
+    return res.json({ user: await findSession(req.cookies.session) });
+  } catch (error) {
+    return next(error);
+  }
+});
 
 app.get('/api/auth/oauth2/start', (req, res) => {
   const settings = oauthSettings();

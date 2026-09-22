@@ -12,6 +12,13 @@ export interface AuthUser {
   roleIds: string[];
 }
 
+export interface TeamSummary {
+  id: string;
+  name: string;
+  code: string;
+  roleIds: string[];
+}
+
 export interface BehaviorLog {
   id: number;
   action: string;
@@ -79,6 +86,21 @@ export function login(account: string, password: string) {
 
 export function logout() {
   return request<void>('/api/auth/logout', { method: 'POST' });
+}
+
+export function getTeams() {
+  return request<{ teams: TeamSummary[]; activeTeamId: string }>('/api/teams');
+}
+
+export function createTeam(name: string, code: string) {
+  return request<{ team: TeamSummary; user: AuthUser; teams: TeamSummary[] }>('/api/teams', {
+    method: 'POST',
+    body: JSON.stringify({ name, code }),
+  });
+}
+
+export function switchTeam(teamId: string) {
+  return request<{ user: AuthUser }>(`/api/teams/${encodeURIComponent(teamId)}/switch`, { method: 'POST' });
 }
 
 export function getPlan() {

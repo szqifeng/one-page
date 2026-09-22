@@ -56,6 +56,15 @@ async function initDatabase() {
       expires_at TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS team_memberships (
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      person_id TEXT NOT NULL,
+      role_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, team_id)
+    );
     CREATE TABLE IF NOT EXISTS planning_plans (
       team_id TEXT PRIMARY KEY REFERENCES teams(id) ON DELETE CASCADE,
       quarter TEXT NOT NULL,
@@ -102,6 +111,7 @@ async function initDatabase() {
       ON user_behavior_logs (team_id, created_at DESC);
   `);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`);
+  await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_team_id TEXT REFERENCES teams(id)`);
   await pool.query(
     `INSERT INTO teams (id, name, code) VALUES ('team-default', $1, 'DEFAULT') ON CONFLICT (id) DO NOTHING`,
     [process.env.DEFAULT_TEAM_NAME || '规划团队'],
@@ -113,6 +123,15 @@ async function initDatabase() {
      VALUES ('user-admin', 'team-default', 'p1', 'admin', '系统管理员', $1, '["role-admin"]'::jsonb)
      ON CONFLICT (id) DO NOTHING`,
     [adminHash],
+  );
+  await pool.query(
+    `INSERT INTO team_memberships (user_id, team_id, person_id, role_ids)
+     SELECT id, team_id, person_id, role_ids FROM users
+     ON CONFLICT (user_id, team_id) DO NOTHING`,
+  );
+  await pool.query(
+    `UPDATE sessions s SET active_team_id = u.team_id
+     FROM users u WHERE s.user_id = u.id AND s.active_team_id IS NULL`,
   );
 }
 
@@ -132,8 +151,9 @@ async function login(account, password) {
 async function createSession(user) {
   const token = crypto.randomBytes(32).toString('base64url');
   await pool.query(
-    `INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, now() + ($3 * interval '1 day'))`,
-    [user.id, hashToken(token), SESSION_DAYS],
+    `INSERT INTO sessions (user_id, token_hash, active_team_id, expires_at)
+     VALUES ($1, $2, $3, now() + ($4 * interval '1 day'))`,
+    [user.id, hashToken(token), user.team_id, SESSION_DAYS],
   );
   await pool.query(`UPDATE users SET last_login_at = now(), updated_at = now() WHERE id = $1`, [user.id]);
   return token;
@@ -164,6 +184,11 @@ async function loginWithOAuthProfile(profile) {
       [id, teamId, `person-${crypto.randomUUID()}`, account, displayName, normalizedEmail, passwordHash, JSON.stringify([process.env.OAUTH2_DEFAULT_ROLE_ID || 'role-no-access'])],
     );
     user = inserted.rows[0];
+    await pool.query(
+      `INSERT INTO team_memberships (user_id, team_id, person_id, role_ids)
+       VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT (user_id, team_id) DO NOTHING`,
+      [user.id, teamId, user.person_id, JSON.stringify(user.role_ids)],
+    );
   }
   if (!user) return null;
   await pool.query(`UPDATE users SET email = COALESCE(email, $2), display_name = $3, updated_at = now() WHERE id = $1`, [user.id, normalizedEmail, displayName]);
@@ -174,8 +199,13 @@ async function loginWithOAuthProfile(profile) {
 async function findSession(token) {
   if (!token) return null;
   const result = await pool.query(
-    `SELECT s.id AS session_id, s.expires_at, u.*, t.name AS team_name, t.code AS team_code
-     FROM sessions s JOIN users u ON u.id = s.user_id JOIN teams t ON t.id = u.team_id
+    `SELECT s.id AS session_id, s.expires_at, u.*,
+            t.id AS active_team_id, t.name AS team_name, t.code AS team_code,
+            tm.person_id AS membership_person_id, tm.role_ids AS membership_role_ids
+     FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     JOIN teams t ON t.id = COALESCE(s.active_team_id, u.team_id)
+     JOIN team_memberships tm ON tm.user_id = u.id AND tm.team_id = t.id
      WHERE s.token_hash = $1 AND s.expires_at > now() AND u.status = 'active' AND t.status = 'active'`,
     [hashToken(token)],
   );
@@ -189,15 +219,71 @@ async function logout(token) {
 function publicUser(user) {
   return {
     id: user.id,
-    teamId: user.team_id,
+    teamId: user.active_team_id || user.team_id,
     teamName: user.team_name,
     teamCode: user.team_code,
-    personId: user.person_id,
+    personId: user.membership_person_id || user.person_id,
     account: user.account,
     displayName: user.display_name,
     email: user.email || null,
-    roleIds: user.role_ids,
+    roleIds: user.membership_role_ids || user.role_ids,
   };
+}
+
+async function listTeams(userId) {
+  const result = await pool.query(
+    `SELECT t.id, t.name, t.code, tm.role_ids AS "roleIds"
+     FROM team_memberships tm
+     JOIN teams t ON t.id = tm.team_id
+     WHERE tm.user_id = $1 AND t.status = 'active'
+     ORDER BY tm.created_at, t.name`,
+    [userId],
+  );
+  return result.rows;
+}
+
+async function createTeam(user, name, code) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const teamId = `team-${crypto.randomUUID()}`;
+    const created = await client.query(
+      `INSERT INTO teams (id, name, code) VALUES ($1, $2, $3)
+       RETURNING id, name, code`,
+      [teamId, name, code],
+    );
+    await client.query(
+      `INSERT INTO team_memberships (user_id, team_id, person_id, role_ids)
+       VALUES ($1, $2, 'p1', '["role-admin"]'::jsonb)`,
+      [user.id, teamId],
+    );
+    await client.query(
+      `INSERT INTO audit_logs (team_id, user_id, action, resource, metadata)
+       VALUES ($1, $2, 'create', 'team', $3::jsonb)`,
+      [teamId, user.id, JSON.stringify({ name, code })],
+    );
+    await client.query('COMMIT');
+    return { ...created.rows[0], roleIds: ['role-admin'] };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function switchSessionTeam(token, userId, teamId) {
+  if (!token) return false;
+  const result = await pool.query(
+    `UPDATE sessions s SET active_team_id = $3
+     WHERE s.token_hash = $1 AND s.user_id = $2 AND s.expires_at > now()
+       AND EXISTS (
+         SELECT 1 FROM team_memberships tm JOIN teams t ON t.id = tm.team_id
+         WHERE tm.user_id = $2 AND tm.team_id = $3 AND t.status = 'active'
+       )`,
+    [hashToken(token), userId, teamId],
+  );
+  return result.rowCount > 0;
 }
 
 async function getPlan(teamId) {
@@ -322,6 +408,9 @@ module.exports = {
   loginWithOAuthProfile,
   findSession,
   logout,
+  listTeams,
+  createTeam,
+  switchSessionTeam,
   getPlan,
   savePlan,
   recordBehavior,
