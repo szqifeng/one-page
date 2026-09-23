@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const { Pool } = require('pg');
+const { changeSummary, snapshot } = require('./revisions');
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgres://planner:planner@localhost:5432/rolling_plan',
@@ -111,6 +112,13 @@ async function initDatabase() {
       ON user_behavior_logs (team_id, created_at DESC);
   `);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT`);
+  await pool.query(`
+    ALTER TABLE planning_plan_backups ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'scheduled';
+    ALTER TABLE planning_plan_backups ADD COLUMN IF NOT EXISTS actor_name TEXT;
+    ALTER TABLE planning_plan_backups ADD COLUMN IF NOT EXISTS summary TEXT;
+    CREATE UNIQUE INDEX IF NOT EXISTS plan_revision_unique
+      ON planning_plan_backups (team_id, source_version) WHERE kind <> 'scheduled';
+  `);
   await pool.query(`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS active_team_id TEXT REFERENCES teams(id)`);
   await pool.query(
     `INSERT INTO teams (id, name, code) VALUES ('team-default', $1, 'DEFAULT') ON CONFLICT (id) DO NOTHING`,
@@ -294,10 +302,16 @@ async function getPlan(teamId) {
   return result.rows[0] || null;
 }
 
-async function savePlan(teamId, userId, state, expectedVersion) {
+async function savePlan(teamId, userId, state, expectedVersion, revision = {}) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    const previous = await client.query('SELECT state, version FROM planning_plans WHERE team_id = $1 FOR UPDATE', [teamId]);
+    if (previous.rows[0] && previous.rows[0].version !== expectedVersion) {
+      throw Object.assign(new Error('PLAN_VERSION_CONFLICT'), { code: 'PLAN_VERSION_CONFLICT' });
+    }
+    await snapshot(client, teamId, 'baseline', '升级前或操作前的原始版本');
+    const summary = revision.summary || changeSummary(previous.rows[0]?.state, state);
     const updated = await client.query(
       `UPDATE planning_plans
        SET quarter = $3, state = $4::jsonb, version = version + 1, updated_by = $2, updated_at = now()
@@ -314,6 +328,7 @@ async function savePlan(teamId, userId, state, expectedVersion) {
           [teamId, state.quarter, JSON.stringify(state), userId],
         );
         if (inserted.rowCount) {
+          await snapshot(client, teamId, 'edit', summary);
           await client.query('COMMIT');
           return inserted.rows[0];
         }
@@ -322,10 +337,11 @@ async function savePlan(teamId, userId, state, expectedVersion) {
       error.code = 'PLAN_VERSION_CONFLICT';
       throw error;
     }
+    await snapshot(client, teamId, revision.kind || 'edit', summary);
     await client.query(
       `INSERT INTO audit_logs (team_id, user_id, action, resource, version, metadata)
        VALUES ($1, $2, 'update', 'planning_plan', $3, $4::jsonb)`,
-      [teamId, userId, updated.rows[0].version, JSON.stringify({ quarter: state.quarter })],
+      [teamId, userId, updated.rows[0].version, JSON.stringify({ quarter: state.quarter, kind: revision.kind || 'edit', summary })],
     );
     await client.query('COMMIT');
     return updated.rows[0];
@@ -371,15 +387,16 @@ async function listBehaviorLogs(teamId, limit = 200) {
   return result.rows;
 }
 
-async function listPlanVersions(teamId, limit = 50) {
+async function listPlanVersions(teamId, limit = 50, offset = 0) {
   const result = await pool.query(
     `SELECT b.id, b.source_version AS "sourceVersion", b.backup_date AS "backupDate",
-            b.backup_slot AS "backupSlot", b.created_at AS "createdAt"
+            b.backup_slot AS "backupSlot", b.created_at AS "createdAt", b.kind,
+            b.actor_name AS "actorName", b.summary
      FROM planning_plan_backups b
      WHERE b.team_id = $1
      ORDER BY b.created_at DESC, b.id DESC
-     LIMIT $2`,
-    [teamId, Math.min(Math.max(Number(limit) || 50, 1), 50)],
+     LIMIT $2 OFFSET $3`,
+    [teamId, Math.min(Math.max(Number(limit) || 50, 1), 50), Math.max(0, Math.floor(Number(offset) || 0))],
   );
   return result.rows;
 }

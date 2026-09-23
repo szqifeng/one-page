@@ -209,6 +209,7 @@ export default function RollingPlanPage() {
   const [quarterModalOpen, setQuarterModalOpen] = useState(false);
   const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
+  const [versionOffset, setVersionOffset] = useState(0);
   const [ownerFilter, setOwnerFilter] = useState('all');
   const [personTypeFilter, setPersonTypeFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState<'all' | DemandType>('all');
@@ -777,11 +778,12 @@ export default function RollingPlanPage() {
     message.success('参考容量已更新');
   };
 
-  const openRestoreHistory = async () => {
+  const openRestoreHistory = async (offset = 0) => {
     setRestoreModalOpen(true);
     setVersionsLoading(true);
     try {
-      const result = await getPlanVersions();
+      const result = await getPlanVersions(offset);
+      setVersionOffset(offset);
       setPlanVersions(result.versions);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '版本列表加载失败');
@@ -984,7 +986,7 @@ export default function RollingPlanPage() {
             </Button>
           )}
           {canEditAll && (
-            <Button icon={<ReloadOutlined />} onClick={openRestoreHistory}>恢复版本</Button>
+            <Button icon={<ReloadOutlined />} onClick={() => openRestoreHistory()}>版本历史</Button>
           )}
           {canCreateItem && (
             <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreateItem()}>
@@ -1466,13 +1468,18 @@ export default function RollingPlanPage() {
 
       <Modal
         width={760}
-        title="恢复规划版本"
+        title="编辑历史与规划恢复"
         open={restoreModalOpen}
         onCancel={() => setRestoreModalOpen(false)}
         footer={null}
         destroyOnHidden
       >
-        <Text type="secondary">每天定时生成 3 份备份，此处展示最近 50 份。恢复不会删除已有备份。</Text>
+        <Text type="secondary">每次保存均保留历史版本，另有每日 3 次定时备份。每页 50 条；恢复生成新版本，原数据仍可找回。恢复保留当前权限，已删除人员恢复为停用。</Text>
+        <Space style={{ marginTop: 12 }}>
+          <Button disabled={versionOffset === 0 || versionsLoading} onClick={() => openRestoreHistory(versionOffset - 50)}>上一页</Button>
+          <Text>第 {versionOffset / 50 + 1} 页</Text>
+          <Button disabled={planVersions.length < 50 || versionsLoading} onClick={() => openRestoreHistory(versionOffset + 50)}>下一页</Button>
+        </Space>
         <Table<PlanVersion>
           rowKey="id"
           size="small"
@@ -1483,7 +1490,9 @@ export default function RollingPlanPage() {
           locale={{ emptyText: '暂无可恢复版本' }}
           columns={[
             { title: '备份日期', dataIndex: 'backupDate', width: 130, render: (value: string) => dayjs(value).format('YYYY-MM-DD') },
-            { title: '备份时点', dataIndex: 'backupSlot', width: 100 },
+            { title: '来源', dataIndex: 'kind', width: 100, render: (value: PlanVersion['kind']) => ({ scheduled: '定时备份', edit: '编辑保存', restore: '版本恢复', baseline: '原始版本' }[value]) },
+            { title: '修改人', dataIndex: 'actorName', render: (value: string) => value || '系统' },
+            { title: '变更摘要', dataIndex: 'summary', render: (value: string) => value || '定时快照' },
             { title: '数据版本', dataIndex: 'sourceVersion', width: 100, render: (value: number) => `v${value}` },
             { title: '实际生成时间', dataIndex: 'createdAt', width: 190, render: (value: string) => dayjs(value).format('YYYY-MM-DD HH:mm:ss') },
             {
@@ -1491,13 +1500,13 @@ export default function RollingPlanPage() {
               width: 100,
               render: (_: unknown, record: PlanVersion) => (
                 <Popconfirm
-                  title={`恢复 ${record.backupDate} ${record.backupSlot} 的备份？`}
-                  description="恢复后会生成新的版本记录。"
+                  title={`将团队规划恢复为 v${record.sourceVersion}？`}
+                  description="会影响所有成员的规划。当前版本会保留，权限配置不会回退。"
                   okText="恢复"
                   cancelText="取消"
                   onConfirm={() => restoreVersion(record)}
                 >
-                  <Button type="link" size="small">恢复</Button>
+                  <Button type="link" size="small" disabled={!hasPermission(plan, 'permission.manage')}>恢复</Button>
                 </Popconfirm>
               ),
             },

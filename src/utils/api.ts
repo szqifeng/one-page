@@ -34,6 +34,9 @@ export interface BehaviorLog {
 }
 
 export interface PlanVersion {
+  kind: 'scheduled' | 'edit' | 'restore' | 'baseline';
+  actorName: string | null;
+  summary: string | null;
   id: string;
   sourceVersion: number;
   backupDate: string;
@@ -121,8 +124,8 @@ export function getBehaviorLogs(limit = 200) {
   return request<{ logs: BehaviorLog[] }>(`/api/audit/behaviors?limit=${limit}`);
 }
 
-export function getPlanVersions() {
-  return request<{ versions: PlanVersion[]; currentVersion: number }>('/api/plan/versions');
+export function getPlanVersions(offset = 0) {
+  return request<{ versions: PlanVersion[]; currentVersion: number }>(`/api/plan/versions?offset=${offset}`);
 }
 
 export function restorePlanVersion(backupId: string, version: number) {

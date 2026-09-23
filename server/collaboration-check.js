@@ -1,7 +1,7 @@
 // Run against a disposable/development database: node server/collaboration-check.js
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const { pool, savePlan, findSession } = require('./db');
+const { pool, savePlan, findSession, listPlanVersions, getPlanVersion, getPlan } = require('./db');
 
 async function main() {
   const teamId = `test-${crypto.randomUUID()}`;
@@ -24,6 +24,20 @@ async function main() {
       assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
       assert.equal(results.find((result) => result.status === 'rejected').reason.code, 'PLAN_VERSION_CONFLICT');
     }
+    const history = await listPlanVersions(teamId);
+    assert.deepEqual(history.map((entry) => entry.sourceVersion).sort(), [1, 2]);
+    assert.ok(history.every((entry) => entry.actorName && entry.kind === 'edit'));
+    const original = await getPlanVersion(teamId, history.find((entry) => entry.sourceVersion === 1).id);
+    await savePlan(teamId, 'user-admin', { quarter: 'accidental deletion' }, 2);
+    await savePlan(teamId, 'user-admin', original.state, 3, { kind: 'restore', summary: 'restore v1' });
+    assert.deepEqual((await getPlan(teamId)).state, state);
+    const recoveredHistory = await listPlanVersions(teamId);
+    assert.equal(recoveredHistory.length, 4);
+    assert.equal(recoveredHistory[0].kind, 'restore');
+    assert.equal((await getPlanVersion(teamId, recoveredHistory.find((entry) => entry.sourceVersion === 3).id)).state.quarter, 'accidental deletion');
+    assert.equal(await getPlanVersion('team-default', recoveredHistory[0].id), null);
+    assert.equal((await listPlanVersions(teamId, 2, 2)).length, 2);
+    console.log('PASS: immutable edit history, attributable versions, reversible restore, team isolation, pagination');
     console.log('PASS: concurrent initialization, concurrent writes, explicit team isolation, membership denial');
   } finally {
     await pool.query('DELETE FROM sessions WHERE token_hash = $1', [hash]);

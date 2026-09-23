@@ -129,6 +129,13 @@ function normalizeStoredPlan(state) {
 
 function canEditPlan(plan, user, nextState) {
   const permissions = permissionKeys(plan, user);
+  if (permissions.has('permission.manage') && !permissionKeys(nextState, user).has('permission.manage')) return false;
+  // Editing tasks does not grant authority to change access control.
+  if (!permissions.has('permission.manage')) {
+    if (JSON.stringify(plan.permissionRoles) !== JSON.stringify(nextState.permissionRoles)) return false;
+    const roles = (people) => (people || []).map(({ id, account, status, permissionRoleIds }) => ({ id, account, status, permissionRoleIds }));
+    if (JSON.stringify(roles(plan.people)) !== JSON.stringify(roles(nextState.people))) return false;
+  }
   if (permissions.has('plan.edit_all')) return true;
   if (!permissions.has('plan.edit_own')) return false;
   if (!plan || !nextState) return false;
@@ -398,7 +405,7 @@ app.get('/api/plan/versions', auth, async (req, res, next) => {
     if (!current || !permissionKeys(current.state, req.user).has('plan.edit_all')) {
       return res.status(403).json({ message: '没有查看规划版本的权限' });
     }
-    return res.json({ versions: await listPlanVersions(req.user.teamId, 50), currentVersion: current.version });
+    return res.json({ versions: await listPlanVersions(req.user.teamId, 50, req.query.offset), currentVersion: current.version });
   } catch (error) {
     return next(error);
   }
@@ -407,14 +414,23 @@ app.get('/api/plan/versions', auth, async (req, res, next) => {
 app.post('/api/plan/versions/:backupId/restore', auth, async (req, res, next) => {
   try {
     const current = await getPlan(req.user.teamId);
-    if (!current || !permissionKeys(current.state, req.user).has('plan.edit_all')) {
+    if (!current || !permissionKeys(current.state, req.user).has('permission.manage')) {
       return res.status(403).json({ message: '没有恢复规划版本的权限' });
     }
     const source = await getPlanVersion(req.user.teamId, Number(req.params.backupId));
     if (req.body?.version !== current.version) return res.status(409).json({ message: '规划已更新，请重新加载后再恢复' });
     if (!source) return res.status(404).json({ message: '规划备份不存在' });
-    const restoredPlan = { ...normalizeStoredPlan(source.state), currentUserId: req.user.personId };
-    const saved = await savePlan(req.user.teamId, req.user.id, restoredPlan, current.version);
+    // Recover business data without rolling back today's personnel and access grants.
+    const recoveredPeople = (source.state.people || []).map((person) => {
+      const live = current.state.people.find((candidate) => candidate.id === person.id);
+      return live ? { ...person, account: live.account, status: live.status, permissionRoleIds: live.permissionRoleIds }
+        : { ...person, status: 'disabled', permissionRoleIds: [] };
+    });
+    const restoredPlan = { ...normalizeStoredPlan(source.state), people: [...recoveredPeople,
+      ...current.state.people.filter((person) => !recoveredPeople.some((candidate) => candidate.id === person.id))],
+      permissionRoles: current.state.permissionRoles, personnelTypes: current.state.personnelTypes, currentUserId: req.user.personId };
+    const saved = await savePlan(req.user.teamId, req.user.id, restoredPlan, current.version,
+      { kind: 'restore', summary: `恢复自 v${source.sourceVersion}；保留当前权限，已删除人员恢复为停用` });
     return res.json({ plan: restoredPlan, version: saved.version, updatedAt: saved.updated_at });
   } catch (error) {
     if (error.code === 'PLAN_VERSION_CONFLICT') return res.status(409).json({ message: '规划已被其他人修改，请刷新后重试' });
