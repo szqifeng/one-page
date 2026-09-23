@@ -41,11 +41,14 @@ export interface PlanVersion {
   createdAt: string;
 }
 
-interface PlanResponse {
+export interface PlanResponse {
   plan: PlanState;
   version: number;
   updatedAt: string;
 }
+
+let activeTeamId = '';
+export function bindApiTeam(teamId: string) { activeTeamId = teamId; }
 
 export class ApiError extends Error {
   status: number;
@@ -60,8 +63,8 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
     ...init,
+    headers: { 'Content-Type': 'application/json', ...(activeTeamId ? { 'X-Team-Id': activeTeamId } : {}), ...(init?.headers ?? {}) },
   });
   if (response.status === 204) return undefined as T;
   const body = await response.json().catch(() => ({}));
@@ -122,6 +125,6 @@ export function getPlanVersions() {
   return request<{ versions: PlanVersion[]; currentVersion: number }>('/api/plan/versions');
 }
 
-export function restorePlanVersion(backupId: string) {
-  return request<{ plan: PlanState; version: number; updatedAt: string }>(`/api/plan/versions/${backupId}/restore`, { method: 'POST' });
+export function restorePlanVersion(backupId: string, version: number) {
+  return request<{ plan: PlanState; version: number; updatedAt: string }>(`/api/plan/versions/${backupId}/restore`, { method: 'POST', body: JSON.stringify({ version }) });
 }

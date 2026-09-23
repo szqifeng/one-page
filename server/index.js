@@ -90,6 +90,7 @@ app.use((req, res, next) => {
 
 function permissionKeys(plan, user) {
   const person = (plan?.people || []).find((candidate) => candidate.id === user.personId || candidate.account?.toLowerCase() === user.account?.toLowerCase());
+  if (person?.status === 'disabled') return new Set();
   const roleIds = person?.permissionRoleIds || (Array.isArray(user.roleIds) ? user.roleIds : []);
   return new Set(
     (plan?.permissionRoles || [])
@@ -223,7 +224,7 @@ function validQuarterConfiguration(plan) {
 
 async function auth(req, res, next) {
   try {
-    const user = await findSession(req.cookies.session);
+    const user = await findSession(req.cookies.session, req.get('X-Team-Id') || null);
     if (!user) return res.status(401).json({ message: '请先登录' });
     req.user = user;
     return next();
@@ -372,6 +373,7 @@ app.get('/api/plan', auth, async (req, res, next) => {
   try {
     const record = await getPlan(req.user.teamId);
     if (!record) return res.status(404).json({ message: '团队规划尚未初始化' });
+    if (!permissionKeys(record.state, req.user).has('plan.view')) return res.status(403).json({ message: '没有查看团队规划的权限' });
     res.json({ plan: normalizeStoredPlan(record.state), version: record.version, updatedAt: record.updated_at });
   } catch (error) {
     next(error);
@@ -409,6 +411,7 @@ app.post('/api/plan/versions/:backupId/restore', auth, async (req, res, next) =>
       return res.status(403).json({ message: '没有恢复规划版本的权限' });
     }
     const source = await getPlanVersion(req.user.teamId, Number(req.params.backupId));
+    if (req.body?.version !== current.version) return res.status(409).json({ message: '规划已更新，请重新加载后再恢复' });
     if (!source) return res.status(404).json({ message: '规划备份不存在' });
     const restoredPlan = { ...normalizeStoredPlan(source.state), currentUserId: req.user.personId };
     const saved = await savePlan(req.user.teamId, req.user.id, restoredPlan, current.version);
@@ -422,6 +425,7 @@ app.post('/api/plan/versions/:backupId/restore', auth, async (req, res, next) =>
 app.put('/api/plan', auth, async (req, res, next) => {
   try {
     const { plan, version = 0 } = req.body || {};
+    if (!Number.isInteger(version) || version < 0) return res.status(400).json({ message: '版本号无效' });
     if (!plan || !Array.isArray(plan.people) || !Array.isArray(plan.workItems)) {
       return res.status(400).json({ message: '规划数据格式不正确' });
     }
@@ -429,7 +433,7 @@ app.put('/api/plan', auth, async (req, res, next) => {
       return res.status(400).json({ message: '规划配置无效；每年最多 3 个季度，进度须为 0–100%，事项投入不得超过迭代工作日' });
     }
     const current = await getPlan(req.user.teamId);
-    if (!current && !permissionKeys(plan, req.user).has('plan.edit_all')) {
+    if (!current && !req.user.roleIds.includes('role-admin')) {
       return res.status(403).json({ message: '当前账号没有初始化团队规划的权限' });
     }
     if (current && !canEditPlan(normalizeStoredPlan(current.state), req.user, plan)) {

@@ -35,10 +35,11 @@ import {
   message,
 } from 'antd';
 import dayjs from 'dayjs';
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import { useCollaboration } from '@/utils/useCollaboration';
 import TeamSettings from '@/components/TeamSettings';
 import { seedPlan } from '@/data/seed';
-import { ApiError, createTeam, getAuthConfig, getCurrentUser, getPlan, getPlanVersions, getTeams, login, logout, restorePlanVersion, savePlan as savePlanApi, switchTeam, type AuthUser, type PlanVersion, type TeamSummary } from '@/utils/api';
+import { ApiError, bindApiTeam, createTeam, getAuthConfig, getCurrentUser, getPlan, getPlanVersions, getTeams, login, logout, restorePlanVersion, switchTeam, type AuthUser, type PlanVersion, type TeamSummary } from '@/utils/api';
 import type {
   Allocation,
   DemandType,
@@ -208,7 +209,6 @@ export default function RollingPlanPage() {
   const [quarterModalOpen, setQuarterModalOpen] = useState(false);
   const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
-  const skipNextPersist = useRef(false);
   const [ownerFilter, setOwnerFilter] = useState('all');
   const [personTypeFilter, setPersonTypeFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState<'all' | DemandType>('all');
@@ -226,6 +226,13 @@ export default function RollingPlanPage() {
   const [capacityForm] = Form.useForm<{ iterationCapacityDays: number }>();
   const [quarterForm] = Form.useForm<QuarterFormValues>();
   const [teamForm] = Form.useForm<TeamFormValues>();
+  const collaboration = useCollaboration(plan, planVersion, planHydrated && Boolean(authUser),
+    workModalOpen || settingsOpen || quarterModalOpen || Boolean(capacityPerson) || restoreModalOpen, setPlan);
+  const requireSaved = () => {
+    if (collaboration.canLeave()) return true;
+    message.warning('请等待保存完成；如有冲突，请先导出草稿并重新加载');
+    return false;
+  };
 
   useEffect(() => {
     let active = true;
@@ -239,6 +246,7 @@ export default function RollingPlanPage() {
       .then(async ({ user }) => {
         if (!active) return;
         setAuthUser(user);
+        bindApiTeam(user.teamId);
         try {
           const [remote, teamResult] = await Promise.all([getPlan(), getTeams()]);
           if (!active) return;
@@ -270,33 +278,12 @@ export default function RollingPlanPage() {
     return () => { active = false; };
   }, []);
 
-  useEffect(() => {
-    if (!authUser || !planHydrated) return undefined;
-    if (skipNextPersist.current) {
-      skipNextPersist.current = false;
-      return undefined;
-    }
-    const timer = window.setTimeout(() => {
-      savePlanApi(plan, planVersion)
-        .then(({ version }) => setPlanVersion(version))
-        .catch((error) => {
-          if (error instanceof ApiError && error.status === 409) {
-            message.error('规划已被其他人修改，请刷新页面后重试');
-          } else if (error instanceof ApiError && error.status === 403) {
-            message.error(error.message);
-          } else {
-            message.error('规划保存失败，请检查服务连接');
-          }
-        });
-    }, 350);
-    return () => window.clearTimeout(timer);
-  }, [authUser, plan, planHydrated]);
-
   const handleLogin = async (account: string, password: string) => {
     try {
       setAuthError('');
       const result = await login(account, password);
       setAuthUser(result.user);
+      bindApiTeam(result.user.teamId);
       const [remote, teamResult] = await Promise.all([
         getPlan().catch((error) => {
           if (error instanceof ApiError && error.status === 404) return null;
@@ -315,6 +302,7 @@ export default function RollingPlanPage() {
   };
 
   const handleLogout = async () => {
+    if (!requireSaved()) return;
     await logout().catch(() => undefined);
     setAuthUser(null);
     setPlanHydrated(false);
@@ -334,6 +322,7 @@ export default function RollingPlanPage() {
   };
 
   const loadTeamWorkspace = async (user: AuthUser, blankWhenMissing = false) => {
+    bindApiTeam(user.teamId);
     const remote = await getPlan().catch((error) => {
       if (error instanceof ApiError && error.status === 404) return null;
       throw error;
@@ -347,6 +336,7 @@ export default function RollingPlanPage() {
 
   const handleTeamChange = async (teamId: string) => {
     if (!authUser || teamId === authUser.teamId) return;
+    if (!requireSaved()) return;
     setTeamChanging(true);
     setPlanHydrated(false);
     try {
@@ -356,8 +346,7 @@ export default function RollingPlanPage() {
       setPlanHydrated(true);
       message.success(`已切换到 ${user.teamName}`);
     } catch (error) {
-      setPlanHydrated(true);
-      message.error(error instanceof Error ? error.message : '团队切换失败');
+      message.error('团队加载失败，请重新加载页面：' + (error instanceof Error ? error.message : '请求失败'));
     } finally {
       setTeamChanging(false);
     }
@@ -365,6 +354,7 @@ export default function RollingPlanPage() {
 
   const submitTeam = async () => {
     const values = await teamForm.validateFields();
+    if (!requireSaved()) return;
     setTeamChanging(true);
     setPlanHydrated(false);
     try {
@@ -377,8 +367,7 @@ export default function RollingPlanPage() {
       teamForm.resetFields();
       message.success(`团队「${result.team.name}」创建成功`);
     } catch (error) {
-      setPlanHydrated(true);
-      message.error(error instanceof Error ? error.message : '团队创建失败');
+      message.error('团队创建或加载失败，请重新加载页面：' + (error instanceof Error ? error.message : '请求失败'));
     } finally {
       setTeamChanging(false);
     }
@@ -657,6 +646,13 @@ export default function RollingPlanPage() {
   if (!authUser) {
     return <LoginScreen onLogin={handleLogin} error={authError} oauthEnabled={oauthEnabled} passwordEnabled={passwordEnabled} />;
   }
+  if (!planHydrated) {
+    return <main className={styles.loginPage}><Card title="团队数据尚未加载">
+      <p>{authError || '请重新加载团队数据后继续操作'}</p>
+      <Button onClick={() => window.location.reload()}>重新加载</Button>
+      <Button onClick={async () => { await logout(); window.location.reload(); }}>退出登录</Button>
+    </Card></main>;
+  }
 
   const nextCode = (type: DemandType) => {
     const prefix = type === 'dpo' ? 'D' : 'N';
@@ -795,9 +791,9 @@ export default function RollingPlanPage() {
   };
 
   const restoreVersion = async (backup: PlanVersion) => {
+    if (!requireSaved()) return;
     try {
-      const result = await restorePlanVersion(backup.id);
-      skipNextPersist.current = true;
+      const result = await restorePlanVersion(backup.id, collaboration.version());
       const normalized = normalizePlanQuarters(result.plan);
       setPlan({ ...normalized, currentUserId: personIdForUser(normalized, authUser) });
       setPlanVersion(result.version);
@@ -1000,6 +996,20 @@ export default function RollingPlanPage() {
       </header>
 
       <div className={styles.content}>
+        <Space wrap style={{ marginBottom: 12 }}>
+          <Tag color={collaboration.status === '已同步' ? 'green' : 'orange'}>{planHydrated ? collaboration.status : '团队数据未就绪，请重新加载'}</Tag>
+          <Button size="small" onClick={() => {
+            const url = URL.createObjectURL(new Blob([JSON.stringify(plan, null, 2)], { type: 'application/json' }));
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `planning-draft-${authUser.teamCode}.json`;
+            link.click();
+            URL.revokeObjectURL(url);
+          }}>导出本地草稿</Button>
+          <Popconfirm title="重新加载会丢弃未保存的修改，请先导出草稿" onConfirm={() => window.location.reload()}>
+            <Button size="small">重新加载</Button>
+          </Popconfirm>
+        </Space>
         <Row gutter={[12, 12]} className={styles.summary}>
           <Col xs={12} lg={6}>
             <ProCard className={styles.metricCard}>

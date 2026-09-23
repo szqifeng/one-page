@@ -196,7 +196,7 @@ async function loginWithOAuthProfile(profile) {
   return { token, user: publicUser({ ...user, email: normalizedEmail, display_name: displayName }) };
 }
 
-async function findSession(token) {
+async function findSession(token, teamId = null) {
   if (!token) return null;
   const result = await pool.query(
     `SELECT s.id AS session_id, s.expires_at, u.*,
@@ -204,10 +204,10 @@ async function findSession(token) {
             tm.person_id AS membership_person_id, tm.role_ids AS membership_role_ids
      FROM sessions s
      JOIN users u ON u.id = s.user_id
-     JOIN teams t ON t.id = COALESCE(s.active_team_id, u.team_id)
+     JOIN teams t ON t.id = COALESCE($2::text, s.active_team_id, u.team_id)
      JOIN team_memberships tm ON tm.user_id = u.id AND tm.team_id = t.id
      WHERE s.token_hash = $1 AND s.expires_at > now() AND u.status = 'active' AND t.status = 'active'`,
-    [hashToken(token)],
+    [hashToken(token), teamId],
   );
   return result.rows[0] ? publicUser(result.rows[0]) : null;
 }
@@ -310,11 +310,13 @@ async function savePlan(teamId, userId, state, expectedVersion) {
       if (existing.rowCount === 0 && expectedVersion === 0) {
         const inserted = await client.query(
           `INSERT INTO planning_plans (team_id, quarter, state, version, updated_by)
-           VALUES ($1, $2, $3::jsonb, 1, $4) RETURNING version, updated_at`,
+           VALUES ($1, $2, $3::jsonb, 1, $4) ON CONFLICT (team_id) DO NOTHING RETURNING version, updated_at`,
           [teamId, state.quarter, JSON.stringify(state), userId],
         );
-        await client.query('COMMIT');
-        return inserted.rows[0];
+        if (inserted.rowCount) {
+          await client.query('COMMIT');
+          return inserted.rows[0];
+        }
       }
       const error = new Error('PLAN_VERSION_CONFLICT');
       error.code = 'PLAN_VERSION_CONFLICT';
